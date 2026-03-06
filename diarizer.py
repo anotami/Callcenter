@@ -21,7 +21,7 @@ def load_diarization_model() -> DiarizationPipeline:
 
     pipeline = DiarizationPipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        use_auth_token=HF_TOKEN,
+        token=HF_TOKEN,
     )
 
     if WHISPER_DEVICE == "cuda":
