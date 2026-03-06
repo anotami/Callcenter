@@ -4,8 +4,11 @@ Usa pyannote.audio para detectar y separar las intervenciones
 de los diferentes hablantes (Asesor vs Cliente).
 """
 
+import logging
 from pyannote.audio import Pipeline as DiarizationPipeline
 from config import HF_TOKEN, WHISPER_DEVICE
+
+logger = logging.getLogger("callcenter.diarizer")
 
 
 def load_diarization_model() -> DiarizationPipeline:
@@ -28,7 +31,7 @@ def load_diarization_model() -> DiarizationPipeline:
         import torch
         pipeline.to(torch.device("cuda"))
 
-    print("[Diarizacion] Modelo pyannote cargado")
+    logger.info("Modelo pyannote cargado")
     return pipeline
 
 
@@ -38,20 +41,26 @@ def diarize(pipeline: DiarizationPipeline, audio_path: str) -> list[dict]:
 
     Retorna lista de dicts:
         [{"start": 0.0, "end": 2.5, "speaker": "SPEAKER_00"}, ...]
+    Retorna lista vacia si hay un error.
     """
-    diarization = pipeline(audio_path)
+    try:
+        diarization = pipeline(audio_path)
 
-    segments = []
-    for turn, _, speaker in diarization.itertracks(yield_label=True):
-        segments.append({
-            "start": round(turn.start, 2),
-            "end": round(turn.end, 2),
-            "speaker": speaker,
-        })
+        segments = []
+        for turn, _, speaker in diarization.itertracks(yield_label=True):
+            segments.append({
+                "start": round(turn.start, 2),
+                "end": round(turn.end, 2),
+                "speaker": speaker,
+            })
 
-    print(f"[Diarizacion] {len(segments)} segmentos, "
-          f"hablantes detectados: {len(set(s['speaker'] for s in segments))}")
-    return segments
+        speakers = set(s["speaker"] for s in segments)
+        logger.info("%d segmentos, hablantes detectados: %d", len(segments), len(speakers))
+        return segments
+
+    except Exception as e:
+        logger.error("Error al diarizar '%s': %s", audio_path, e)
+        return []
 
 
 def merge_transcription_diarization(
@@ -64,15 +73,26 @@ def merge_transcription_diarization(
 
     Asigna cada segmento de transcripcion al hablante que mas se solapa temporalmente.
     """
-    merged = []
+    if not diarization:
+        return [
+            {**t_seg, "speaker": "DESCONOCIDO"}
+            for t_seg in transcription
+        ]
 
+    merged = []
     for t_seg in transcription:
         t_start, t_end = t_seg["start"], t_seg["end"]
         best_speaker = "DESCONOCIDO"
         best_overlap = 0.0
 
         for d_seg in diarization:
-            # Calcular solapamiento temporal
+            # Salto rapido: si el segmento de diarizacion termina antes, saltar
+            if d_seg["end"] < t_start:
+                continue
+            # Si ya paso el segmento de transcripcion, no hay mas solapamiento
+            if d_seg["start"] > t_end:
+                break
+
             overlap_start = max(t_start, d_seg["start"])
             overlap_end = min(t_end, d_seg["end"])
             overlap = max(0.0, overlap_end - overlap_start)

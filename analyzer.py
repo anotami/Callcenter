@@ -4,9 +4,17 @@ Se conecta a LM Studio u Ollama via API compatible con OpenAI.
 """
 
 import json
+import re
+import time
+import logging
 from openai import OpenAI
 from config import LLM_BASE_URL, LLM_MODEL
 from prompts import SYSTEM_PROMPT, build_evaluation_prompt
+
+logger = logging.getLogger("callcenter.analyzer")
+
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 2
 
 
 def create_llm_client() -> OpenAI:
@@ -18,15 +26,41 @@ def create_llm_client() -> OpenAI:
     """
     client = OpenAI(
         base_url=LLM_BASE_URL,
-        api_key="not-needed",  # LM Studio/Ollama no requieren API key
+        api_key="not-needed",
     )
-    print(f"[LLM] Cliente creado -> {LLM_BASE_URL} (modelo: {LLM_MODEL})")
+    logger.info("Cliente creado -> %s (modelo: %s)", LLM_BASE_URL, LLM_MODEL)
     return client
+
+
+def _extract_json(text: str) -> dict | None:
+    """
+    Extrae JSON de una respuesta LLM que puede contener texto adicional
+    o bloques de codigo markdown (```json ... ```).
+    """
+    # Intentar bloques ```json ... ``` primero
+    match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback: buscar el objeto JSON mas externo
+    json_start = text.find("{")
+    json_end = text.rfind("}") + 1
+    if json_start != -1 and json_end > json_start:
+        try:
+            return json.loads(text[json_start:json_end])
+        except json.JSONDecodeError:
+            pass
+
+    return None
 
 
 def analyze_call(client: OpenAI, dialogue: str) -> dict:
     """
     Envia el dialogo transcrito al LLM para evaluacion de calidad.
+    Reintenta hasta MAX_RETRIES veces si la llamada falla.
 
     Args:
         client: Cliente OpenAI apuntando a LM Studio/Ollama
@@ -37,32 +71,42 @@ def analyze_call(client: OpenAI, dialogue: str) -> dict:
     """
     user_prompt = build_evaluation_prompt(dialogue)
 
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.1,  # Baja temperatura para respuestas consistentes
-        max_tokens=2000,
-    )
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.1,
+                max_tokens=2000,
+            )
 
-    raw_response = response.choices[0].message.content
-    print(f"[LLM] Respuesta recibida ({len(raw_response)} caracteres)")
+            raw_response = response.choices[0].message.content
+            logger.info("Respuesta recibida (%d caracteres)", len(raw_response))
 
-    # Intentar parsear JSON de la respuesta
-    try:
-        # Buscar JSON en la respuesta (puede venir con texto adicional)
-        json_start = raw_response.find("{")
-        json_end = raw_response.rfind("}") + 1
-        if json_start != -1 and json_end > json_start:
-            result = json.loads(raw_response[json_start:json_end])
-        else:
-            result = {"raw_response": raw_response, "parse_error": "No JSON found"}
-    except json.JSONDecodeError as e:
-        result = {"raw_response": raw_response, "parse_error": str(e)}
+            result = _extract_json(raw_response)
+            if result is not None:
+                return result
 
-    return result
+            logger.warning("No se encontro JSON valido en la respuesta del LLM")
+            return {"raw_response": raw_response, "parse_error": "No JSON found"}
+
+        except Exception as e:
+            last_error = e
+            if attempt < MAX_RETRIES:
+                wait = RETRY_DELAY_SECONDS * attempt
+                logger.warning(
+                    "Error en intento %d/%d: %s. Reintentando en %ds...",
+                    attempt, MAX_RETRIES, e, wait,
+                )
+                time.sleep(wait)
+            else:
+                logger.error("Fallo tras %d intentos: %s", MAX_RETRIES, e)
+
+    return {"raw_response": "", "parse_error": str(last_error)}
 
 
 def format_evaluation_report(evaluation: dict) -> str:

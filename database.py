@@ -3,10 +3,13 @@ Proceso 4: Almacenamiento en SQL Server.
 Guarda resultados de evaluacion y permite cruzar con datos de demanda.
 """
 
+import logging
 import pyodbc
 import pandas as pd
 from datetime import datetime
 from config import SQL_SERVER, SQL_DATABASE, SQL_USERNAME, SQL_PASSWORD, SQL_DRIVER
+
+logger = logging.getLogger("callcenter.database")
 
 
 def get_connection_string() -> str:
@@ -22,7 +25,7 @@ def get_connection_string() -> str:
 
 def get_connection() -> pyodbc.Connection:
     conn = pyodbc.connect(get_connection_string())
-    print(f"[DB] Conectado a {SQL_SERVER}/{SQL_DATABASE}")
+    logger.info("Conectado a %s/%s", SQL_SERVER, SQL_DATABASE)
     return conn
 
 
@@ -67,7 +70,7 @@ def create_tables(conn: pyodbc.Connection):
     """)
 
     conn.commit()
-    print("[DB] Tablas creadas/verificadas")
+    logger.info("Tablas creadas/verificadas")
 
 
 def save_evaluation(
@@ -115,7 +118,7 @@ def save_evaluation(
         )
 
     conn.commit()
-    print(f"[DB] Evaluacion guardada con ID={eval_id}")
+    logger.info("Evaluacion guardada con ID=%d", eval_id)
     return eval_id
 
 
@@ -134,4 +137,4 @@ def export_to_csv(conn: pyodbc.Connection, output_path: str):
     """
     df = pd.read_sql(query, conn)
     df.to_csv(output_path, index=False, encoding="utf-8-sig")
-    print(f"[DB] Exportado a {output_path} ({len(df)} filas)")
+    logger.info("Exportado a %s (%d filas)", output_path, len(df))

@@ -13,12 +13,14 @@ Uso:
   python main.py                     # Procesa todos los audios en audio/
   python main.py audio/llamada.mp3   # Procesa un archivo especifico
   python main.py --no-db             # Sin guardar en SQL Server (solo CSV)
+  python main.py --parallel          # Procesa audios en paralelo (mas rapido)
 """
 
 import sys
 import json
+import logging
 from pathlib import Path
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config import AUDIO_DIR, OUTPUT_DIR, AUDIO_EXTENSIONS
 from transcriber import load_whisper_model, transcribe
@@ -30,6 +32,8 @@ from diarizer import (
 )
 from analyzer import create_llm_client, analyze_call, format_evaluation_report
 
+logger = logging.getLogger("callcenter.main")
+
 
 def find_audio_files(path: str | None = None) -> list[Path]:
     """Encuentra archivos de audio para procesar."""
@@ -37,7 +41,7 @@ def find_audio_files(path: str | None = None) -> list[Path]:
         p = Path(path)
         if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS:
             return [p]
-        print(f"[Error] Archivo no valido: {path}")
+        logger.error("Archivo no valido: %s", path)
         return []
 
     files = [
@@ -53,42 +57,41 @@ def process_single_audio(
     whisper_model,
     diarization_pipeline,
     llm_client,
-    save_to_db: bool = True,
+    db_conn=None,
 ) -> dict | None:
     """Procesa un solo archivo de audio a traves del pipeline completo."""
-    print(f"\n{'='*60}")
-    print(f"Procesando: {audio_path.name}")
-    print(f"{'='*60}")
+    logger.info("=" * 60)
+    logger.info("Procesando: %s", audio_path.name)
 
     # Paso 1: Transcripcion
-    print("\n[1/4] Transcribiendo audio...")
+    logger.info("[1/4] Transcribiendo audio...")
     transcription = transcribe(whisper_model, str(audio_path))
     if not transcription:
-        print("[Error] No se pudo transcribir el audio")
+        logger.error("No se pudo transcribir el audio: %s", audio_path.name)
         return None
 
     # Paso 2: Diarizacion
-    print("\n[2/4] Diarizando (identificando hablantes)...")
+    logger.info("[2/4] Diarizando (identificando hablantes)...")
     diarization = diarize(diarization_pipeline, str(audio_path))
 
     # Paso 3: Combinar transcripcion + diarizacion
-    print("\n[3/4] Combinando transcripcion con diarizacion...")
+    logger.info("[3/4] Combinando transcripcion con diarizacion...")
     merged = merge_transcription_diarization(transcription, diarization)
     dialogue = format_dialogue(merged)
 
     # Guardar transcripcion en archivo
     transcript_path = OUTPUT_DIR / f"{audio_path.stem}_transcripcion.txt"
     transcript_path.write_text(dialogue, encoding="utf-8")
-    print(f"  Transcripcion guardada: {transcript_path}")
+    logger.info("Transcripcion guardada: %s", transcript_path)
 
     # Paso 4: Analisis con LLM
-    print("\n[4/4] Analizando calidad con LLM...")
+    logger.info("[4/4] Analizando calidad con LLM...")
     evaluation = analyze_call(llm_client, dialogue)
 
     # Guardar evaluacion en JSON
     eval_path = OUTPUT_DIR / f"{audio_path.stem}_evaluacion.json"
     eval_path.write_text(json.dumps(evaluation, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"  Evaluacion guardada: {eval_path}")
+    logger.info("Evaluacion guardada: %s", eval_path)
 
     # Mostrar reporte
     report = format_evaluation_report(evaluation)
@@ -98,31 +101,44 @@ def process_single_audio(
     report_path = OUTPUT_DIR / f"{audio_path.stem}_reporte.txt"
     report_path.write_text(report, encoding="utf-8")
 
-    # Guardar en base de datos
-    if save_to_db:
+    # Guardar en base de datos (reutiliza conexion existente)
+    if db_conn is not None:
         try:
-            from database import get_connection, create_tables, save_evaluation
-            conn = get_connection()
-            create_tables(conn)
+            from database import save_evaluation
             num_speakers = len(set(s["speaker"] for s in merged))
             duration = transcription[-1]["end"] if transcription else 0
-            save_evaluation(conn, audio_path.name, dialogue, evaluation,
+            save_evaluation(db_conn, audio_path.name, dialogue, evaluation,
                             num_speakers, duration)
-            conn.close()
         except Exception as e:
-            print(f"[DB] No se pudo guardar en base de datos: {e}")
-            print("[DB] Los resultados se guardaron en archivos locales.")
+            logger.warning("No se pudo guardar en base de datos: %s", e)
+            logger.info("Los resultados se guardaron en archivos locales.")
 
     return evaluation
+
+
+def _init_db(save_to_db: bool):
+    """Abre la conexion a DB una sola vez para todo el batch."""
+    if not save_to_db:
+        return None
+    try:
+        from database import get_connection, create_tables
+        conn = get_connection()
+        create_tables(conn)
+        return conn
+    except Exception as e:
+        logger.warning("No se pudo conectar a la base de datos: %s", e)
+        logger.info("Continuando sin base de datos.")
+        return None
 
 
 def main():
     # Parsear argumentos
     args = sys.argv[1:]
     save_to_db = "--no-db" not in args
+    parallel = "--parallel" in args
     audio_path = None
     for arg in args:
-        if arg != "--no-db":
+        if not arg.startswith("--"):
             audio_path = arg
             break
 
@@ -131,29 +147,60 @@ def main():
     if not audio_files:
         print(f"No se encontraron archivos de audio en {AUDIO_DIR}/")
         print(f"Formatos soportados: {', '.join(AUDIO_EXTENSIONS)}")
-        print(f"\nUso: python main.py [archivo_audio] [--no-db]")
+        print(f"\nUso: python main.py [archivo_audio] [--no-db] [--parallel]")
         return
 
-    print(f"Archivos a procesar: {len(audio_files)}")
+    logger.info("Archivos a procesar: %d", len(audio_files))
     if not save_to_db:
-        print("Modo: Sin base de datos (solo archivos locales)")
+        logger.info("Modo: Sin base de datos (solo archivos locales)")
+    if parallel:
+        logger.info("Modo: Procesamiento en paralelo")
 
     # Cargar modelos (una sola vez para todos los audios)
-    print("\nCargando modelos...")
+    logger.info("Cargando modelos...")
     whisper_model = load_whisper_model()
     diarization_pipeline = load_diarization_model()
     llm_client = create_llm_client()
-    print("Todos los modelos cargados.\n")
+    logger.info("Todos los modelos cargados.")
 
-    # Procesar cada audio
-    results = []
-    for audio_file in audio_files:
-        result = process_single_audio(
-            audio_file, whisper_model, diarization_pipeline,
-            llm_client, save_to_db,
-        )
-        if result:
-            results.append({"file": audio_file.name, "evaluation": result})
+    # Abrir conexion DB una sola vez
+    db_conn = _init_db(save_to_db)
+
+    try:
+        results = []
+
+        if parallel and len(audio_files) > 1:
+            # Procesamiento en paralelo (util para el paso LLM que es I/O bound)
+            with ThreadPoolExecutor(max_workers=min(4, len(audio_files))) as executor:
+                futures = {
+                    executor.submit(
+                        process_single_audio,
+                        audio_file, whisper_model, diarization_pipeline,
+                        llm_client, db_conn,
+                    ): audio_file
+                    for audio_file in audio_files
+                }
+                for future in as_completed(futures):
+                    audio_file = futures[future]
+                    try:
+                        result = future.result()
+                        if result:
+                            results.append({"file": audio_file.name, "evaluation": result})
+                    except Exception as e:
+                        logger.error("Error procesando %s: %s", audio_file.name, e)
+        else:
+            for audio_file in audio_files:
+                result = process_single_audio(
+                    audio_file, whisper_model, diarization_pipeline,
+                    llm_client, db_conn,
+                )
+                if result:
+                    results.append({"file": audio_file.name, "evaluation": result})
+
+    finally:
+        if db_conn is not None:
+            db_conn.close()
+            logger.info("Conexion a DB cerrada")
 
     # Resumen final
     print(f"\n{'='*60}")
