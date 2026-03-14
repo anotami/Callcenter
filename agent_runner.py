@@ -110,12 +110,20 @@ def load_result_by_file(filepath: str) -> dict | None:
 # ── Ejecutores de habilidades ──────────────────────────────────────────
 
 
+def _temp_save(audio_bytes: bytes, filename: str) -> str:
+    """Guarda bytes de audio en archivo temporal y retorna la ruta."""
+    import tempfile
+    temp_dir = tempfile.gettempdir()
+    temp_path = os.path.join(temp_dir, filename)
+    with open(temp_path, "wb") as f:
+        f.write(audio_bytes)
+    return temp_path
+
+
 def run_transcribir_audio(audio_bytes: bytes, filename: str) -> dict:
     """Ejecuta la transcripcion de un audio."""
     from transcriber import load_whisper_model, transcribe
-    temp_path = f"/tmp/{filename}"
-    with open(temp_path, "wb") as f:
-        f.write(audio_bytes)
+    temp_path = _temp_save(audio_bytes, filename)
 
     model = load_whisper_model()
     segments = transcribe(model, temp_path)
@@ -138,9 +146,7 @@ def run_detectar_idioma(audio_bytes: bytes, filename: str) -> dict:
     from faster_whisper import WhisperModel
     from config import WHISPER_MODEL, WHISPER_DEVICE
 
-    temp_path = f"/tmp/{filename}"
-    with open(temp_path, "wb") as f:
-        f.write(audio_bytes)
+    temp_path = _temp_save(audio_bytes, filename)
 
     compute_type = "float16" if WHISPER_DEVICE == "cuda" else "int8"
     model = WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=compute_type)
@@ -157,9 +163,7 @@ def run_identificar_hablantes(audio_bytes: bytes, filename: str) -> dict:
     """Ejecuta diarizacion para identificar hablantes."""
     from diarizer import load_diarization_model, diarize
 
-    temp_path = f"/tmp/{filename}"
-    with open(temp_path, "wb") as f:
-        f.write(audio_bytes)
+    temp_path = _temp_save(audio_bytes, filename)
 
     pipeline = load_diarization_model()
     segments = diarize(pipeline, temp_path)
@@ -185,9 +189,7 @@ def run_generar_dialogo(audio_bytes: bytes, filename: str,
         merge_transcription_diarization, format_dialogue,
     )
 
-    temp_path = f"/tmp/{filename}"
-    with open(temp_path, "wb") as f:
-        f.write(audio_bytes)
+    temp_path = _temp_save(audio_bytes, filename)
 
     # Usar transcripcion previa si existe, sino transcribir
     if transcripcion_previa and "segmentos" in transcripcion_previa:

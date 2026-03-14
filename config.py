@@ -1,9 +1,12 @@
 import os
 import logging
 from pathlib import Path
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv es opcional, usa variables de entorno directamente
 
 # --- Logging centralizado ---
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

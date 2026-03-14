@@ -20,3 +20,6 @@ sqlalchemy>=2.0
 pandas>=2.1.0
 python-dotenv>=1.0.0
 pydub>=0.25.1
+
+# UI de agentes
+streamlit>=1.34.0
