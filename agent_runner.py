@@ -6,8 +6,32 @@ Ejecuta skills, guarda resultados con versionado, y permite a ATLAS consumirlos.
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+
+class _SafeEncoder(json.JSONEncoder):
+    """Encoder que convierte tipos numpy/pandas a tipos nativos de Python."""
+
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, (pd.Timestamp, datetime)):
+            return obj.isoformat()
+        if isinstance(obj, date):
+            return obj.isoformat()
+        if isinstance(obj, pd.Timedelta):
+            return str(obj)
+        if pd.isna(obj):
+            return None
+        return super().default(obj)
 
 from config import BASE_DIR
 
@@ -65,7 +89,7 @@ def save_result(agent_id: str, skill_id: str, skill_name: str,
         "resultado": result_data,
     }
     path = _result_path(agent_id, skill_id, version)
-    path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+    path.write_text(json.dumps(record, indent=2, ensure_ascii=False, cls=_SafeEncoder), encoding="utf-8")
     logger.info("Resultado guardado: %s (v%d)", path.name, version)
     return record
 
