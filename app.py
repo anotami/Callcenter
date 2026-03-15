@@ -26,7 +26,8 @@ st.markdown("""
 <style>
     .agent-role { font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 1px; }
     #MainMenu {visibility: hidden;}
-    header {visibility: hidden;}
+    header[data-testid="stHeader"] {visibility: hidden;}
+    [data-testid="collapsedControl"] {visibility: visible !important;}
 </style>
 """, unsafe_allow_html=True)
 
