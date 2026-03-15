@@ -1,0 +1,21 @@
+fecha,ticket_id,agente_id,csat_score,nps_score,ces_score,canal,tipo_contacto,resuelto_primer_contacto,comentario_cliente
+2025-03-01,T001,A001,5,9,2,telefono,consulta,Si,Muy amable la asesora me resolvio todo rapido
+2025-03-01,T002,A002,3,6,4,telefono,soporte,No,Tuve que llamar dos veces para resolver mi problema
+2025-03-01,T003,A003,4,8,2,telefono,cambio_plan,Si,Bien la atencion aunque tardo un poco
+2025-03-01,T004,A004,1,2,5,telefono,reclamo,No,Me dieron informacion equivocada sobre mi factura pesimo servicio
+2025-03-01,T005,A005,5,10,1,telefono,cancelacion,Si,Excelente me convencio de quedarme con un plan mejor
+2025-03-01,T006,A006,3,5,3,telefono,consulta,Si,Regular me tuvo mucho tiempo en espera
+2025-03-01,T007,A007,5,9,2,telefono,activacion,Si,Muy clara y eficiente la asesora
+2025-03-01,T008,A008,2,3,5,telefono,reclamo,No,No me resolvieron nada y no pasaron con un supervisor
+2025-03-01,T009,A001,5,10,1,telefono,reclamo,Si,Resolvio mi problema complejo en una sola llamada
+2025-03-01,T010,A003,4,8,2,telefono,consulta,Si,Buena atencion en general
+2025-03-02,T011,A005,5,10,1,telefono,portabilidad,Si,Me retuvo con una oferta increible muy profesional
+2025-03-02,T012,A002,4,7,3,telefono,consulta,Si,Mejoro respecto a mi llamada anterior
+2025-03-02,T013,A004,2,3,4,telefono,consulta,Si,Lento y poco claro en sus explicaciones
+2025-03-02,T014,A007,5,9,1,telefono,cambio_titular,Si,Proceso rapido y sin complicaciones
+2025-03-02,T015,A008,2,2,5,telefono,falla_tecnica,No,Terrible experiencia no saben resolver problemas tecnicos
+2025-03-02,T016,A001,5,9,2,telefono,reclamo,Si,Siempre excelente esta asesora
+2025-03-02,T017,A006,3,6,3,telefono,pago,Si,Cumplio pero sin nada especial
+2025-03-02,T018,A003,4,8,2,telefono,soporte,Si,Resolvio en primer contacto bien
+2025-03-02,T019,A005,5,10,1,telefono,cancelacion,Si,Increible capacidad de retencion
+2025-03-02,T020,A002,4,7,2,telefono,activacion,Si,Bien explicado el proceso
