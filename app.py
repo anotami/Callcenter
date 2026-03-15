@@ -26,8 +26,24 @@ st.markdown("""
 <style>
     .agent-role { font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 1px; }
     #MainMenu {visibility: hidden;}
-    header[data-testid="stHeader"] {visibility: hidden;}
-    [data-testid="collapsedControl"] {visibility: visible !important;}
+
+    /* Forzar sidebar siempre visible */
+    [data-testid="stSidebar"] {
+        display: block !important;
+        visibility: visible !important;
+        position: relative !important;
+        width: 21rem !important;
+        min-width: 21rem !important;
+        transform: none !important;
+        z-index: 999;
+    }
+    [data-testid="stSidebar"] > div:first-child {
+        width: 21rem !important;
+        min-width: 21rem !important;
+    }
+    /* Ocultar boton de colapsar ya que siempre esta visible */
+    [data-testid="collapsedControl"] { display: none !important; }
+    button[kind="headerNoPadding"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
