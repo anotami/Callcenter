@@ -37,6 +37,22 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:1234/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.1-8b-instruct")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "not-needed")
 
+# Lista de modelos fallback (se intentan en orden si el principal falla)
+# Configurable via variable de entorno separada por comas
+_fallback_env = os.getenv("LLM_FALLBACK_MODELS", "")
+LLM_FALLBACK_MODELS = (
+    [m.strip() for m in _fallback_env.split(",") if m.strip()]
+    if _fallback_env
+    else [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "gemma2-9b-it",
+        "mixtral-8x7b-32768",
+        "llama3-70b-8192",
+    ]
+)
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "5"))
+
 # SQL Server
 SQL_SERVER = os.getenv("SQL_SERVER", "localhost")
 SQL_DATABASE = os.getenv("SQL_DATABASE", "CallCenter")

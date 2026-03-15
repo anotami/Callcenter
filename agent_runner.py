@@ -13,6 +13,9 @@ from config import BASE_DIR
 
 logger = logging.getLogger("callcenter.agent_runner")
 
+# Contenedor de progreso activo (se usa desde _llm_analyze y execute_skill)
+_active_status_container = None
+
 # Directorio donde se guardan los resultados versionados
 RESULTS_DIR = BASE_DIR / "agent_results"
 RESULTS_DIR.mkdir(exist_ok=True)
@@ -153,26 +156,33 @@ def _df_summary(df, nombre_fuente: str = "datos") -> dict:
 
 
 def _llm_analyze(prompt: str, system: str = "") -> dict:
-    """Envia un prompt al LLM y retorna JSON parseado."""
-    from analyzer import create_llm_client, _extract_json
-    from config import LLM_MODEL
+    """Envia un prompt al LLM con fallback entre modelos y retorna JSON parseado."""
+    global _active_status_container
+    from analyzer import call_llm, _extract_json
 
     if not system:
         system = "Eres un analista experto de operaciones de call center. Responde SIEMPRE en JSON."
 
-    client = create_llm_client()
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.1,
-        max_tokens=3000,
-    )
-    raw = response.choices[0].message.content
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt},
+    ]
+
+    try:
+        raw, model_used = call_llm(
+            messages=messages,
+            temperature=0.1,
+            max_tokens=3000,
+            status_container=_active_status_container,
+        )
+    except RuntimeError as e:
+        return {"error": str(e)}
+
     result = _extract_json(raw)
-    return result if result else {"raw_response": raw}
+    if result:
+        result["_modelo_usado"] = model_used
+        return result
+    return {"raw_response": raw}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -530,6 +540,7 @@ Texto: {texto}"""
 
 
 def run_evaluar_llamada(texto: str, resultado_previo: dict | None = None) -> dict:
+    global _active_status_container
     from analyzer import create_llm_client, analyze_call
 
     dialogue = texto
@@ -543,7 +554,7 @@ def run_evaluar_llamada(texto: str, resultado_previo: dict | None = None) -> dic
         return {"error": "Texto demasiado corto para evaluar"}
 
     client = create_llm_client()
-    return analyze_call(client, dialogue)
+    return analyze_call(client, dialogue, status_container=_active_status_container)
 
 
 def run_monitoreo_kpis(file_bytes: bytes | None, filename: str,
@@ -922,9 +933,14 @@ def execute_skill(agent_id: str, skill_id: str, skill_name: str,
                   filename: str = "",
                   texto: str = "",
                   resultado_previo: dict | None = None,
-                  resultados_multiples: list[dict] | None = None) -> dict:
+                  resultados_multiples: list[dict] | None = None,
+                  status_container=None) -> dict:
+    global _active_status_container
+    _active_status_container = status_container
+
     runner = SKILL_RUNNERS.get(skill_id)
     if not runner:
+        _active_status_container = None
         return {"error": f"Habilidad '{skill_id}' no implementada"}
 
     try:
@@ -989,6 +1005,8 @@ def execute_skill(agent_id: str, skill_id: str, skill_name: str,
     except Exception as e:
         logger.error("Error ejecutando %s/%s: %s", agent_id, skill_id, e)
         result = {"error": str(e)}
+    finally:
+        _active_status_container = None
 
     input_summary = filename if filename else (texto[:100] + "..." if len(texto) > 100 else texto)
     record = save_result(agent_id, skill_id, skill_name, result, input_summary)

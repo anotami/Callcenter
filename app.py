@@ -233,7 +233,10 @@ else:
                     type="primary",
                     key=f"exec_{skill['id']}",
                 ):
-                    with st.spinner(f"Ejecutando {skill['nombre']}..."):
+                    with st.status(
+                        f"Ejecutando {skill['nombre']}...",
+                        expanded=True,
+                    ) as status_ui:
                         audio_bytes = None
                         file_bytes = None
                         filename = ""
@@ -263,8 +266,23 @@ else:
                             resultados_multiples=(
                                 selected_prev_results if skill.get("multi_resultado") else None
                             ),
+                            status_container=status_ui,
                         )
                         st.session_state.execution_result = result
+                        res_data = result.get("resultado", {})
+                        if isinstance(res_data, dict) and "error" in res_data:
+                            status_ui.update(
+                                label=f"Error: {res_data['error'][:80]}",
+                                state="error",
+                            )
+                        else:
+                            modelo = ""
+                            if isinstance(res_data, dict):
+                                modelo = res_data.get("_modelo_usado", "")
+                            label = f"{skill['nombre']} completado"
+                            if modelo:
+                                label += f" (modelo: {modelo})"
+                            status_ui.update(label=label, state="complete")
 
                 # ── Mostrar Resultado ──────────────────────────────────
                 if st.session_state.execution_result:
