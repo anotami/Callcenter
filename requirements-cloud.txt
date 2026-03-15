@@ -1,0 +1,9 @@
+# Cliente LLM (compatible con LM Studio y Ollama)
+openai>=1.10.0
+
+# Utilidades
+pandas>=2.1.0
+python-dotenv>=1.0.0
+
+# UI de agentes
+streamlit>=1.34.0
