@@ -5,14 +5,27 @@ y consume menos memoria GPU/RAM.
 """
 
 import logging
-from faster_whisper import WhisperModel
-from config import WHISPER_MODEL, WHISPER_DEVICE, WHISPER_LANGUAGE
 
 logger = logging.getLogger("callcenter.transcriber")
 
+try:
+    from faster_whisper import WhisperModel
+    _WHISPER_AVAILABLE = True
+except ImportError:
+    WhisperModel = None  # type: ignore[assignment,misc]
+    _WHISPER_AVAILABLE = False
+    logger.warning("faster_whisper no esta instalado. La transcripcion de audio no estara disponible.")
 
-def load_whisper_model() -> WhisperModel:
+from config import WHISPER_MODEL, WHISPER_DEVICE, WHISPER_LANGUAGE
+
+
+def load_whisper_model():
     """Carga el modelo faster-whisper. Se recomienda llamar una sola vez."""
+    if not _WHISPER_AVAILABLE:
+        raise ImportError(
+            "faster_whisper no esta instalado. "
+            "Instala con: pip install faster-whisper"
+        )
     compute_type = "float16" if WHISPER_DEVICE == "cuda" else "int8"
     model = WhisperModel(
         WHISPER_MODEL,
@@ -23,7 +36,7 @@ def load_whisper_model() -> WhisperModel:
     return model
 
 
-def transcribe(model: WhisperModel, audio_path: str) -> list[dict]:
+def transcribe(model, audio_path: str) -> list[dict]:
     """
     Transcribe un archivo de audio y devuelve segmentos con timestamps.
 
@@ -31,6 +44,10 @@ def transcribe(model: WhisperModel, audio_path: str) -> list[dict]:
         [{"start": 0.0, "end": 2.5, "text": "Hola buenos dias..."}, ...]
     Retorna lista vacia si hay un error de transcripcion.
     """
+    if not _WHISPER_AVAILABLE:
+        logger.error("faster_whisper no esta instalado. No se puede transcribir.")
+        return []
+
     try:
         segments, info = model.transcribe(
             audio_path,

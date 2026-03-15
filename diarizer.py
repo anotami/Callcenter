@@ -5,17 +5,29 @@ de los diferentes hablantes (Asesor vs Cliente).
 """
 
 import logging
-from pyannote.audio import Pipeline as DiarizationPipeline
+
+try:
+    from pyannote.audio import Pipeline as DiarizationPipeline
+    _PYANNOTE_AVAILABLE = True
+except ImportError:
+    DiarizationPipeline = None  # type: ignore[assignment,misc]
+    _PYANNOTE_AVAILABLE = False
+
 from config import HF_TOKEN, WHISPER_DEVICE
 
 logger = logging.getLogger("callcenter.diarizer")
 
 
-def load_diarization_model() -> DiarizationPipeline:
+def load_diarization_model():
     """
     Carga el pipeline de diarizacion de pyannote.
     Requiere aceptar la licencia en HuggingFace y tener HF_TOKEN configurado.
     """
+    if not _PYANNOTE_AVAILABLE:
+        raise ImportError(
+            "pyannote.audio no esta instalado. "
+            "Instala con: pip install pyannote.audio"
+        )
     if not HF_TOKEN:
         raise ValueError(
             "HF_TOKEN no configurado. Obtener en https://huggingface.co/settings/tokens "
