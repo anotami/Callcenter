@@ -1,6 +1,6 @@
 """
 Motor de ejecucion de habilidades de agentes.
-Ejecuta skills, guarda resultados con versionado, y permite a Atlas consumirlos.
+Ejecuta skills, guarda resultados con versionado, y permite a ATLAS consumirlos.
 """
 
 import json
@@ -18,8 +18,10 @@ RESULTS_DIR = BASE_DIR / "agent_results"
 RESULTS_DIR.mkdir(exist_ok=True)
 
 
+# ── Utilidades de versionado ───────────────────────────────────────────
+
+
 def _result_path(agent_id: str, skill_id: str, version: int) -> Path:
-    """Genera la ruta del archivo de resultado versionado."""
     today = datetime.now().strftime("%Y-%m-%d")
     agent_dir = RESULTS_DIR / agent_id
     agent_dir.mkdir(exist_ok=True)
@@ -27,38 +29,29 @@ def _result_path(agent_id: str, skill_id: str, version: int) -> Path:
 
 
 def _next_version(agent_id: str, skill_id: str) -> int:
-    """Encuentra la siguiente version disponible para hoy."""
     today = datetime.now().strftime("%Y-%m-%d")
     prefix = f"{skill_id}_{today}_v"
     agent_dir = RESULTS_DIR / agent_id
     if not agent_dir.exists():
         return 1
-    existing = [
-        f.stem for f in agent_dir.iterdir()
-        if f.stem.startswith(prefix.rstrip("v"))  # match without 'v' for pattern
-    ]
     max_v = 0
-    for name in existing:
-        try:
-            v = int(name.split("_v")[-1])
-            max_v = max(max_v, v)
-        except (ValueError, IndexError):
-            pass
+    for f in agent_dir.iterdir():
+        if f.stem.startswith(prefix.rstrip("v")):
+            try:
+                v = int(f.stem.split("_v")[-1])
+                max_v = max(max_v, v)
+            except (ValueError, IndexError):
+                pass
     return max_v + 1
 
 
 def save_result(agent_id: str, skill_id: str, skill_name: str,
-                result_data: dict | str, input_summary: str = "") -> dict:
-    """
-    Guarda el resultado de una habilidad con versionado.
-    Retorna metadata del resultado guardado.
-    """
+                result_data, input_summary: str = "") -> dict:
     version = _next_version(agent_id, skill_id)
     now = datetime.now()
-
     record = {
         "agent_id": agent_id,
-        "agent_name": agent_id.capitalize(),
+        "agent_name": agent_id.upper(),
         "skill_id": skill_id,
         "skill_name": skill_name,
         "version": version,
@@ -68,7 +61,6 @@ def save_result(agent_id: str, skill_id: str, skill_name: str,
         "input_summary": input_summary,
         "resultado": result_data,
     }
-
     path = _result_path(agent_id, skill_id, version)
     path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.info("Resultado guardado: %s (v%d)", path.name, version)
@@ -76,16 +68,11 @@ def save_result(agent_id: str, skill_id: str, skill_name: str,
 
 
 def load_all_results(agent_id: str | None = None) -> list[dict]:
-    """
-    Carga todos los resultados guardados.
-    Si agent_id se especifica, filtra solo ese agente.
-    """
     results = []
     if agent_id:
         agent_dirs = [RESULTS_DIR / agent_id]
     else:
         agent_dirs = [d for d in RESULTS_DIR.iterdir() if d.is_dir()]
-
     for agent_dir in agent_dirs:
         if not agent_dir.exists():
             continue
@@ -100,37 +87,236 @@ def load_all_results(agent_id: str | None = None) -> list[dict]:
 
 
 def load_result_by_file(filepath: str) -> dict | None:
-    """Carga un resultado especifico por su ruta."""
     try:
         return json.loads(Path(filepath).read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, FileNotFoundError):
         return None
 
 
-# ── Ejecutores de habilidades ──────────────────────────────────────────
+# ── Utilidades compartidas ─────────────────────────────────────────────
 
 
 def _temp_save(audio_bytes: bytes, filename: str) -> str:
-    """Guarda bytes de audio en archivo temporal y retorna la ruta."""
     import tempfile
-    temp_dir = tempfile.gettempdir()
-    temp_path = os.path.join(temp_dir, filename)
+    temp_path = os.path.join(tempfile.gettempdir(), filename)
     with open(temp_path, "wb") as f:
         f.write(audio_bytes)
     return temp_path
 
 
+def _load_dataframe(file_bytes: bytes, filename: str):
+    """Carga un archivo en un DataFrame de pandas."""
+    import pandas as pd
+    import io
+
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".csv":
+        return pd.read_csv(io.BytesIO(file_bytes))
+    elif ext in (".xlsx", ".xls"):
+        return pd.read_excel(io.BytesIO(file_bytes))
+    elif ext == ".json":
+        return pd.read_json(io.BytesIO(file_bytes))
+    else:
+        raise ValueError(f"Formato no soportado: {ext}")
+
+
+def _df_summary(df, nombre_fuente: str = "datos") -> dict:
+    """Genera resumen estadistico de un DataFrame."""
+    summary = {
+        "fuente": nombre_fuente,
+        "filas": len(df),
+        "columnas": list(df.columns),
+        "tipos": {col: str(dtype) for col, dtype in df.dtypes.items()},
+    }
+    # Estadisticas para columnas numericas
+    num_cols = df.select_dtypes(include=["number"]).columns.tolist()
+    if num_cols:
+        stats = {}
+        for col in num_cols:
+            stats[col] = {
+                "min": float(df[col].min()) if not df[col].isna().all() else None,
+                "max": float(df[col].max()) if not df[col].isna().all() else None,
+                "promedio": round(float(df[col].mean()), 2) if not df[col].isna().all() else None,
+                "total": round(float(df[col].sum()), 2) if not df[col].isna().all() else None,
+            }
+        summary["estadisticas"] = stats
+
+    # Muestra de datos
+    summary["muestra"] = df.head(5).to_dict(orient="records")
+
+    # Datos faltantes
+    nulos = df.isnull().sum()
+    if nulos.any():
+        summary["datos_faltantes"] = {col: int(n) for col, n in nulos.items() if n > 0}
+
+    return summary
+
+
+def _llm_analyze(prompt: str, system: str = "") -> dict:
+    """Envia un prompt al LLM y retorna JSON parseado."""
+    from analyzer import create_llm_client, _extract_json
+    from config import LLM_MODEL
+
+    if not system:
+        system = "Eres un analista experto de operaciones de call center. Responde SIEMPRE en JSON."
+
+    client = create_llm_client()
+    response = client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.1,
+        max_tokens=3000,
+    )
+    raw = response.choices[0].message.content
+    result = _extract_json(raw)
+    return result if result else {"raw_response": raw}
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  CORTEX - Runners de Datos
+# ══════════════════════════════════════════════════════════════════════
+
+
+def run_ingesta_acd(file_bytes: bytes, filename: str) -> dict:
+    df = _load_dataframe(file_bytes, filename)
+    summary = _df_summary(df, "ACD")
+
+    # Detectar columnas clave de ACD
+    cols_lower = {c.lower(): c for c in df.columns}
+    kpis_detectados = {}
+
+    keywords_map = {
+        "llamadas_recibidas": ["recibidas", "offered", "received", "entrantes", "inbound"],
+        "llamadas_atendidas": ["atendidas", "answered", "handled", "contestadas"],
+        "llamadas_abandonadas": ["abandonadas", "abandoned", "lost", "perdidas"],
+        "tmo": ["tmo", "aht", "handle_time", "tiempo_medio"],
+        "nivel_servicio": ["nivel_servicio", "service_level", "nds", "sl", "ans"],
+        "tiempo_espera": ["espera", "wait", "asa", "speed_answer"],
+    }
+
+    for kpi, keywords in keywords_map.items():
+        for kw in keywords:
+            for col_lower, col_orig in cols_lower.items():
+                if kw in col_lower:
+                    kpis_detectados[kpi] = {
+                        "columna": col_orig,
+                        "promedio": round(float(df[col_orig].mean()), 2) if df[col_orig].dtype in ["float64", "int64"] else None,
+                        "total": round(float(df[col_orig].sum()), 2) if df[col_orig].dtype in ["float64", "int64"] else None,
+                    }
+                    break
+            if kpi in kpis_detectados:
+                break
+
+    summary["kpis_detectados"] = kpis_detectados
+    summary["tipo_ingesta"] = "ACD"
+    return summary
+
+
+def run_ingesta_qa(file_bytes: bytes, filename: str) -> dict:
+    df = _load_dataframe(file_bytes, filename)
+    summary = _df_summary(df, "QA")
+
+    # Detectar columnas de calidad
+    cols_lower = {c.lower(): c for c in df.columns}
+    for kw in ["puntaje", "score", "calificacion", "nota", "quality"]:
+        for col_lower, col_orig in cols_lower.items():
+            if kw in col_lower and df[col_orig].dtype in ["float64", "int64"]:
+                summary["puntaje_columna"] = col_orig
+                summary["puntaje_promedio"] = round(float(df[col_orig].mean()), 2)
+                summary["puntaje_min"] = round(float(df[col_orig].min()), 2)
+                summary["puntaje_max"] = round(float(df[col_orig].max()), 2)
+                # Distribucion
+                if df[col_orig].max() <= 100:
+                    summary["distribucion"] = {
+                        "excelente_90_100": int((df[col_orig] >= 90).sum()),
+                        "bueno_80_89": int(((df[col_orig] >= 80) & (df[col_orig] < 90)).sum()),
+                        "regular_70_79": int(((df[col_orig] >= 70) & (df[col_orig] < 80)).sum()),
+                        "bajo_70": int((df[col_orig] < 70).sum()),
+                    }
+                break
+        if "puntaje_promedio" in summary:
+            break
+
+    summary["tipo_ingesta"] = "QA"
+    return summary
+
+
+def run_ingesta_cx(file_bytes: bytes, filename: str) -> dict:
+    df = _load_dataframe(file_bytes, filename)
+    summary = _df_summary(df, "CX")
+
+    cols_lower = {c.lower(): c for c in df.columns}
+
+    # Detectar CSAT
+    for kw in ["csat", "satisfaccion", "satisfaction"]:
+        for col_lower, col_orig in cols_lower.items():
+            if kw in col_lower and df[col_orig].dtype in ["float64", "int64"]:
+                summary["csat_promedio"] = round(float(df[col_orig].mean()), 2)
+                break
+
+    # Detectar NPS
+    for kw in ["nps", "promotor", "recommend"]:
+        for col_lower, col_orig in cols_lower.items():
+            if kw in col_lower and df[col_orig].dtype in ["float64", "int64"]:
+                vals = df[col_orig].dropna()
+                promotores = (vals >= 9).sum()
+                detractores = (vals <= 6).sum()
+                total = len(vals)
+                if total > 0:
+                    summary["nps"] = round(((promotores - detractores) / total) * 100, 1)
+                break
+
+    # Detectar verbatims
+    for kw in ["comentario", "verbatim", "comment", "feedback", "observacion"]:
+        for col_lower, col_orig in cols_lower.items():
+            if kw in col_lower:
+                verbatims = df[col_orig].dropna().tolist()
+                summary["total_verbatims"] = len(verbatims)
+                summary["muestra_verbatims"] = verbatims[:5]
+                break
+
+    summary["tipo_ingesta"] = "CX"
+    return summary
+
+
+def run_validar_fuentes(resultados: list[dict]) -> dict:
+    fuentes = []
+    for r in resultados:
+        data = r.get("resultado", r)
+        if isinstance(data, dict) and "tipo_ingesta" in data:
+            fuentes.append(data)
+
+    if len(fuentes) < 2:
+        return {"error": "Se necesitan al menos 2 fuentes de datos para validar"}
+
+    resumen = []
+    for f in fuentes:
+        resumen.append(f"Fuente {f.get('tipo_ingesta', '?')}: {f.get('filas', 0)} filas, columnas: {f.get('columnas', [])}")
+
+    prompt = f"""Analiza estas {len(fuentes)} fuentes de datos de call center y genera un reporte de validacion:
+
+{chr(10).join(resumen)}
+
+Responde en JSON con:
+- "consistencia": nivel general (alta/media/baja)
+- "alertas": lista de inconsistencias detectadas
+- "cruces_posibles": que datos se pueden cruzar entre fuentes
+- "datos_faltantes": que informacion falta
+- "recomendaciones": lista de acciones
+"""
+    return _llm_analyze(prompt)
+
+
 def run_transcribir_audio(audio_bytes: bytes, filename: str) -> dict:
-    """Ejecuta la transcripcion de un audio."""
     from transcriber import load_whisper_model, transcribe
     temp_path = _temp_save(audio_bytes, filename)
-
     model = load_whisper_model()
     segments = transcribe(model, temp_path)
-
     if not segments:
         return {"error": "No se pudo transcribir el audio"}
-
     full_text = " ".join(s["text"] for s in segments)
     return {
         "segmentos": segments,
@@ -141,71 +327,25 @@ def run_transcribir_audio(audio_bytes: bytes, filename: str) -> dict:
     }
 
 
-def run_detectar_idioma(audio_bytes: bytes, filename: str) -> dict:
-    """Detecta el idioma de un audio."""
-    from faster_whisper import WhisperModel
-    from config import WHISPER_MODEL, WHISPER_DEVICE
-
-    temp_path = _temp_save(audio_bytes, filename)
-
-    compute_type = "float16" if WHISPER_DEVICE == "cuda" else "int8"
-    model = WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=compute_type)
-    _, info = model.transcribe(temp_path, beam_size=1)
-
-    return {
-        "idioma": info.language,
-        "probabilidad": round(info.language_probability * 100, 1),
-        "descripcion": f"Idioma detectado: {info.language.upper()} con {info.language_probability*100:.1f}% de confianza",
-    }
-
-
-def run_identificar_hablantes(audio_bytes: bytes, filename: str) -> dict:
-    """Ejecuta diarizacion para identificar hablantes."""
-    from diarizer import load_diarization_model, diarize
-
-    temp_path = _temp_save(audio_bytes, filename)
-
-    pipeline = load_diarization_model()
-    segments = diarize(pipeline, temp_path)
-
-    if not segments:
-        return {"error": "No se pudo diarizar el audio"}
-
-    speakers = list(set(s["speaker"] for s in segments))
-    return {
-        "segmentos": segments,
-        "num_hablantes": len(speakers),
-        "hablantes": speakers,
-        "total_segmentos": len(segments),
-    }
-
-
 def run_generar_dialogo(audio_bytes: bytes, filename: str,
                         transcripcion_previa: dict | None = None) -> dict:
-    """Genera dialogo completo combinando transcripcion + diarizacion."""
     from transcriber import load_whisper_model, transcribe
     from diarizer import (
         load_diarization_model, diarize,
         merge_transcription_diarization, format_dialogue,
     )
-
     temp_path = _temp_save(audio_bytes, filename)
-
-    # Usar transcripcion previa si existe, sino transcribir
     if transcripcion_previa and "segmentos" in transcripcion_previa:
         transcription = transcripcion_previa["segmentos"]
     else:
         model = load_whisper_model()
         transcription = transcribe(model, temp_path)
-
     if not transcription:
         return {"error": "No se pudo transcribir el audio"}
-
     pipeline = load_diarization_model()
     diarization = diarize(pipeline, temp_path)
     merged = merge_transcription_diarization(transcription, diarization)
     dialogue = format_dialogue(merged)
-
     speakers = set(s["speaker"] for s in merged)
     return {
         "dialogo": dialogue,
@@ -215,11 +355,183 @@ def run_generar_dialogo(audio_bytes: bytes, filename: str,
     }
 
 
-def run_evaluar_calidad(texto: str, resultado_previo: dict | None = None) -> dict:
-    """Evalua calidad de atencion usando LLM."""
+# ══════════════════════════════════════════════════════════════════════
+#  NEXUS - Runners de WFM / Capacidad
+# ══════════════════════════════════════════════════════════════════════
+
+
+def run_calcular_carga_trabajo(file_bytes: bytes | None, filename: str,
+                                resultado_previo: dict | None = None) -> dict:
+    if file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+    elif resultado_previo and "muestra" in resultado_previo:
+        import pandas as pd
+        df = pd.DataFrame(resultado_previo["muestra"])
+    else:
+        return {"error": "Se requiere archivo de datos o resultado previo de CORTEX"}
+
+    summary = _df_summary(df, "Carga de Trabajo")
+
+    # Buscar columna de volumen
+    cols_lower = {c.lower(): c for c in df.columns}
+    vol_col = None
+    for kw in ["llamadas", "calls", "recibidas", "offered", "volumen", "contactos"]:
+        for cl, co in cols_lower.items():
+            if kw in cl and df[co].dtype in ["float64", "int64"]:
+                vol_col = co
+                break
+        if vol_col:
+            break
+
+    if vol_col:
+        summary["columna_volumen"] = vol_col
+        summary["total_llamadas"] = int(df[vol_col].sum())
+        summary["promedio_diario"] = round(float(df[vol_col].mean()), 1)
+        summary["pico"] = int(df[vol_col].max())
+        summary["valle"] = int(df[vol_col].min())
+        summary["desviacion"] = round(float(df[vol_col].std()), 1)
+
+    summary["tipo_analisis"] = "carga_trabajo"
+    return summary
+
+
+def run_calcular_tmo(file_bytes: bytes | None, filename: str,
+                     resultado_previo: dict | None = None) -> dict:
+    if file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+    elif resultado_previo and "muestra" in resultado_previo:
+        import pandas as pd
+        df = pd.DataFrame(resultado_previo["muestra"])
+    else:
+        return {"error": "Se requiere archivo de datos o resultado previo"}
+
+    summary = _df_summary(df, "TMO")
+
+    # Buscar columnas de tiempo
+    cols_lower = {c.lower(): c for c in df.columns}
+    tiempos = {}
+    for kw, label in [("tmo", "tmo"), ("aht", "tmo"), ("talk", "talk_time"),
+                       ("hold", "hold_time"), ("acw", "acw"), ("after_call", "acw"),
+                       ("handle", "tmo")]:
+        for cl, co in cols_lower.items():
+            if kw in cl and df[co].dtype in ["float64", "int64"] and label not in tiempos:
+                tiempos[label] = {
+                    "columna": co,
+                    "promedio": round(float(df[co].mean()), 1),
+                    "mediana": round(float(df[co].median()), 1),
+                    "p90": round(float(df[co].quantile(0.90)), 1),
+                    "max": round(float(df[co].max()), 1),
+                }
+                break
+
+    summary["tiempos_detectados"] = tiempos
+
+    # Detectar outliers (> 2 desviaciones estandar)
+    if "tmo" in tiempos:
+        col = tiempos["tmo"]["columna"]
+        mean = df[col].mean()
+        std = df[col].std()
+        outliers = int((df[col] > mean + 2 * std).sum())
+        summary["outliers_tmo"] = outliers
+
+    summary["tipo_analisis"] = "tmo"
+    return summary
+
+
+def run_calcular_staffing(file_bytes: bytes | None, filename: str,
+                          texto: str = "",
+                          resultados_previos: list[dict] | None = None) -> dict:
+    import math
+
+    # Intentar extraer parametros
+    params = {}
+    if texto:
+        try:
+            params = json.loads(texto)
+        except json.JSONDecodeError:
+            # Parsear texto libre con LLM
+            prompt = f"""Extrae los parametros de staffing de este texto. Responde en JSON con:
+- "llamadas_por_hora": numero
+- "tmo_segundos": numero (tiempo medio de operacion en segundos)
+- "nivel_servicio_pct": numero (ej: 80)
+- "tiempo_respuesta_seg": numero (ej: 20)
+- "shrinkage_pct": numero (ej: 30)
+
+Texto: {texto}"""
+            params = _llm_analyze(prompt)
+
+    # Complementar con resultados previos
+    if resultados_previos:
+        for r in resultados_previos:
+            data = r.get("resultado", {})
+            if isinstance(data, dict):
+                if "total_llamadas" in data and "llamadas_por_hora" not in params:
+                    filas = data.get("filas", 1)
+                    params["llamadas_por_hora"] = round(data["total_llamadas"] / max(filas, 1), 1)
+                if "tiempos_detectados" in data and "tmo_segundos" not in params:
+                    tmo = data["tiempos_detectados"].get("tmo", {})
+                    if "promedio" in tmo:
+                        params["tmo_segundos"] = tmo["promedio"]
+
+    # Valores por defecto
+    llamadas = params.get("llamadas_por_hora", 100)
+    tmo = params.get("tmo_segundos", 360)
+    nds_target = params.get("nivel_servicio_pct", 80) / 100
+    t_respuesta = params.get("tiempo_respuesta_seg", 20)
+    shrinkage = params.get("shrinkage_pct", 30) / 100
+
+    # Erlang C simplificado
+    intensidad = llamadas * (tmo / 3600)  # Erlangs
+    agentes_base = math.ceil(intensidad)
+
+    # Iterar para encontrar agentes necesarios
+    mejor_nds = 0
+    agentes_req = agentes_base
+    for n in range(agentes_base, agentes_base + 100):
+        if n <= intensidad:
+            continue
+        # Probabilidad de espera (Erlang C aproximado)
+        rho = intensidad / n
+        pw = (intensidad ** n / math.factorial(min(n, 170))) / (
+            (intensidad ** n / math.factorial(min(n, 170))) +
+            (1 - rho) * sum(intensidad ** k / math.factorial(k) for k in range(n))
+        )
+        nds = 1 - pw * math.exp(-(n - intensidad) * (t_respuesta / tmo))
+        if nds >= nds_target:
+            agentes_req = n
+            mejor_nds = round(nds * 100, 1)
+            break
+        mejor_nds = round(nds * 100, 1)
+
+    agentes_con_shrinkage = math.ceil(agentes_req / (1 - shrinkage))
+    ocupacion = round((intensidad / agentes_req) * 100, 1) if agentes_req > 0 else 0
+
+    return {
+        "tipo_analisis": "staffing",
+        "parametros": {
+            "llamadas_por_hora": llamadas,
+            "tmo_segundos": tmo,
+            "nivel_servicio_target": f"{int(nds_target*100)}/{int(t_respuesta)}",
+            "shrinkage_pct": round(shrinkage * 100, 1),
+        },
+        "resultado": {
+            "erlangs": round(intensidad, 2),
+            "agentes_minimos": agentes_req,
+            "agentes_con_shrinkage": agentes_con_shrinkage,
+            "nivel_servicio_proyectado": mejor_nds,
+            "ocupacion_pct": ocupacion,
+        },
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  SENTINEL - Runners de Calidad
+# ══════════════════════════════════════════════════════════════════════
+
+
+def run_evaluar_llamada(texto: str, resultado_previo: dict | None = None) -> dict:
     from analyzer import create_llm_client, analyze_call
 
-    # Determinar el texto a evaluar
     dialogue = texto
     if resultado_previo:
         if "dialogo" in resultado_previo:
@@ -231,23 +543,86 @@ def run_evaluar_calidad(texto: str, resultado_previo: dict | None = None) -> dic
         return {"error": "Texto demasiado corto para evaluar"}
 
     client = create_llm_client()
-    evaluation = analyze_call(client, dialogue)
-    return evaluation
+    return analyze_call(client, dialogue)
 
 
-def run_generar_reporte(texto: str, resultado_previo: dict | None = None) -> dict:
-    """Genera reporte formateado desde una evaluacion."""
+def run_monitoreo_kpis(file_bytes: bytes | None, filename: str,
+                        resultados_previos: list[dict] | None = None) -> dict:
+    datos = []
+    if file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+        datos.append(_df_summary(df, "KPIs"))
+
+    if resultados_previos:
+        for r in resultados_previos:
+            data = r.get("resultado", {})
+            if isinstance(data, dict):
+                datos.append(data)
+
+    if not datos:
+        return {"error": "Se requieren datos de KPIs"}
+
+    resumen = json.dumps(datos, ensure_ascii=False, default=str)[:3000]
+    prompt = f"""Analiza estos datos de KPIs de calidad de call center:
+
+{resumen}
+
+Genera un monitoreo de KPIs en JSON con:
+- "kpis": lista de objetos con "nombre", "valor", "target", "semaforo" (verde/amarillo/rojo), "tendencia" (sube/baja/estable)
+- "alertas": lista de alertas criticas
+- "resumen": texto breve del estado general
+"""
+    return _llm_analyze(prompt)
+
+
+def run_detectar_rac(texto: str, resultados_previos: list[dict] | None = None) -> dict:
+    contenido = texto
+    if resultados_previos:
+        partes = []
+        for r in resultados_previos:
+            data = r.get("resultado", {})
+            if isinstance(data, dict):
+                if "dialogo" in data:
+                    partes.append(data["dialogo"])
+                elif "texto_completo" in data:
+                    partes.append(data["texto_completo"])
+                elif "evaluacion" in data:
+                    partes.append(json.dumps(data["evaluacion"], ensure_ascii=False))
+        if partes:
+            contenido = "\n---\n".join(partes)
+
+    if not contenido or len(contenido.strip()) < 20:
+        return {"error": "Se requiere contenido para analizar errores criticos"}
+
+    prompt = f"""Analiza este contenido de call center y detecta errores criticos (RAC - Resolucion al Cliente):
+
+{contenido[:3000]}
+
+Busca:
+1. Informacion incorrecta proporcionada al cliente
+2. Procesos no seguidos segun protocolo
+3. Compromisos hechos al cliente pero no registrados/cumplidos
+4. Escalamientos necesarios que fueron omitidos
+5. Datos del cliente no validados correctamente
+
+Responde en JSON con:
+- "errores_criticos": lista de objetos con "tipo", "descripcion", "severidad" (alta/media/baja), "evidencia"
+- "total_errores": numero
+- "riesgo_general": alto/medio/bajo
+- "recomendaciones": lista de acciones correctivas
+"""
+    return _llm_analyze(prompt)
+
+
+def run_generar_reporte_calidad(texto: str, resultado_previo: dict | None = None) -> dict:
     from analyzer import format_evaluation_report
 
     evaluation = resultado_previo if resultado_previo else {}
-
-    # Si recibimos texto JSON, intentar parsearlo
     if texto and not resultado_previo:
         try:
             evaluation = json.loads(texto)
         except json.JSONDecodeError:
             return {"error": "El texto no es un JSON de evaluacion valido"}
-
     if "evaluacion" not in evaluation and "resultado" in evaluation:
         evaluation = evaluation["resultado"]
 
@@ -255,149 +630,306 @@ def run_generar_reporte(texto: str, resultado_previo: dict | None = None) -> dic
     return {"reporte": report, "evaluacion_fuente": evaluation}
 
 
-def run_analisis_cruzado(resultados: list[dict]) -> dict:
-    """Analisis cruzado de multiples evaluaciones."""
-    from analyzer import create_llm_client
-    from config import LLM_MODEL
+# ══════════════════════════════════════════════════════════════════════
+#  LEDGER - Runners Financieros
+# ══════════════════════════════════════════════════════════════════════
 
-    evaluaciones = []
-    for r in resultados:
-        data = r.get("resultado", r)
-        if isinstance(data, dict) and "evaluacion" in data:
-            evaluaciones.append(data)
 
-    if len(evaluaciones) < 2:
-        return {"error": "Se necesitan al menos 2 evaluaciones para analisis cruzado"}
+def run_calcular_facturacion(file_bytes: bytes | None, filename: str,
+                              texto: str = "",
+                              resultados_previos: list[dict] | None = None) -> dict:
+    datos_volumen = {}
+    if file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+        summary = _df_summary(df, "Facturacion")
+        datos_volumen = summary
 
-    resumen_inputs = []
-    for i, ev in enumerate(evaluaciones, 1):
-        puntaje = ev.get("puntaje_total", "N/A")
-        resumen = ev.get("resumen_general", "Sin resumen")
-        resumen_inputs.append(f"Evaluacion {i}: Puntaje={puntaje}/100. {resumen}")
+    if resultados_previos:
+        for r in resultados_previos:
+            data = r.get("resultado", {})
+            if isinstance(data, dict) and "total_llamadas" in data:
+                datos_volumen["total_llamadas"] = data["total_llamadas"]
 
-    prompt = f"""Analiza estas {len(evaluaciones)} evaluaciones de calidad de call center y genera un analisis cruzado:
+    parametros = texto if texto else "tarifa estandar por llamada"
 
-{chr(10).join(resumen_inputs)}
+    prompt = f"""Calcula la facturacion de un call center con estos datos:
+
+Volumetria: {json.dumps(datos_volumen, ensure_ascii=False, default=str)[:2000]}
+
+Parametros de tarifa: {parametros}
+
+Si no hay tarifa especifica, usa tarifas tipicas del mercado colombiano.
 
 Responde en JSON con:
-- "patrones_comunes": lista de patrones que se repiten
-- "mejores_areas": areas donde el desempeno es consistentemente bueno
-- "areas_mejora": areas con oportunidad de mejora
-- "outliers": evaluaciones que se destacan positiva o negativamente
-- "recomendaciones": lista de acciones concretas
-- "puntaje_promedio": promedio numerico
+- "lineas": lista de objetos con "concepto", "cantidad", "tarifa_unitaria", "subtotal"
+- "total_facturacion": numero
+- "moneda": "COP" o "USD"
+- "periodo": periodo detectado o "mensual"
+- "notas": observaciones
 """
-    client = create_llm_client()
-    from analyzer import _extract_json
-    try:
-        response = client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {"role": "system", "content": "Eres un analista de calidad de call center. Responde en JSON."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,
-            max_tokens=2000,
-        )
-        raw = response.choices[0].message.content
-        result = _extract_json(raw)
-        return result if result else {"raw_response": raw}
-    except Exception as e:
-        return {"error": f"Error en analisis cruzado: {e}"}
+    return _llm_analyze(prompt)
 
 
-def run_detectar_tendencias(resultados: list[dict]) -> dict:
-    """Detecta tendencias en evaluaciones a lo largo del tiempo."""
-    puntos = []
-    for r in resultados:
-        data = r.get("resultado", r)
-        if isinstance(data, dict) and "puntaje_total" in data:
-            puntos.append({
-                "fecha": r.get("fecha", "desconocida"),
-                "puntaje": data["puntaje_total"],
-                "resumen": data.get("resumen_general", ""),
+def run_calcular_bonos(file_bytes: bytes | None, filename: str,
+                        texto: str = "",
+                        resultados_previos: list[dict] | None = None) -> dict:
+    kpis = {}
+    if file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+        kpis["datos_archivo"] = _df_summary(df, "Bonos")
+
+    if resultados_previos:
+        for r in resultados_previos:
+            data = r.get("resultado", {})
+            if isinstance(data, dict):
+                kpis[r.get("agent_id", "unknown")] = data
+
+    metas = texto if texto else "metas estandar de call center"
+
+    prompt = f"""Calcula los bonos por desempeno de un call center:
+
+KPIs alcanzados: {json.dumps(kpis, ensure_ascii=False, default=str)[:2500]}
+
+Tabla de metas/bonos: {metas}
+
+Responde en JSON con:
+- "kpis_evaluados": lista de objetos con "kpi", "valor_alcanzado", "meta", "cumple" (si/no), "pct_cumplimiento"
+- "bono_base": monto
+- "ajuste_por_desempeno": porcentaje
+- "bono_final": monto calculado
+- "detalle": explicacion
+"""
+    return _llm_analyze(prompt)
+
+
+def run_calcular_penalidades(file_bytes: bytes | None, filename: str,
+                              texto: str = "",
+                              resultados_previos: list[dict] | None = None) -> dict:
+    kpis = {}
+    if file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+        kpis["datos_archivo"] = _df_summary(df, "Penalidades")
+
+    if resultados_previos:
+        for r in resultados_previos:
+            data = r.get("resultado", {})
+            if isinstance(data, dict):
+                kpis[r.get("agent_id", "unknown")] = data
+
+    slas = texto if texto else "SLAs estandar de call center"
+
+    prompt = f"""Calcula las penalidades por incumplimiento de SLAs:
+
+KPIs del periodo: {json.dumps(kpis, ensure_ascii=False, default=str)[:2500]}
+
+SLAs contractuales: {slas}
+
+Responde en JSON con:
+- "slas_evaluados": lista de objetos con "sla", "target", "valor_real", "gap", "penalidad_aplica" (si/no)
+- "penalidades": lista de objetos con "concepto", "monto", "justificacion"
+- "total_penalidades": suma total
+- "recomendaciones": acciones para evitar penalidades futuras
+"""
+    return _llm_analyze(prompt)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  ATLAS - Runners de Estrategia
+# ══════════════════════════════════════════════════════════════════════
+
+
+def run_consolidar_wbr(file_bytes: bytes | None, filename: str,
+                        texto: str = "",
+                        resultados_previos: list[dict] | None = None) -> dict:
+    insumos = []
+    if file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+        insumos.append({"fuente": "archivo", "datos": _df_summary(df, "WBR")})
+
+    if resultados_previos:
+        for r in resultados_previos:
+            insumos.append({
+                "agente": r.get("agent_name", "?"),
+                "skill": r.get("skill_name", "?"),
+                "fecha": r.get("fecha", "?"),
+                "datos": r.get("resultado", {}),
             })
 
-    if len(puntos) < 2:
-        return {"error": "Se necesitan al menos 2 evaluaciones con puntaje para detectar tendencias"}
+    if not insumos:
+        return {"error": "Se necesitan datos de al menos 2 agentes para el WBR"}
 
-    puntos.sort(key=lambda x: x["fecha"])
-    puntajes = [p["puntaje"] for p in puntos if isinstance(p["puntaje"], (int, float))]
+    contexto = texto if texto else "semana actual"
 
-    tendencia = "estable"
-    if len(puntajes) >= 2:
-        diff = puntajes[-1] - puntajes[0]
-        if diff > 5:
-            tendencia = "mejorando"
-        elif diff < -5:
-            tendencia = "deteriorando"
+    prompt = f"""Genera un reporte WBR (Weekly Business Review) para comite ejecutivo de call center.
 
-    return {
-        "tendencia": tendencia,
-        "puntos": puntos,
-        "puntaje_minimo": min(puntajes) if puntajes else None,
-        "puntaje_maximo": max(puntajes) if puntajes else None,
-        "puntaje_promedio": round(sum(puntajes) / len(puntajes), 1) if puntajes else None,
-        "total_evaluaciones": len(puntos),
-    }
+Periodo: {contexto}
+
+Insumos de los agentes del equipo:
+{json.dumps(insumos, ensure_ascii=False, default=str)[:4000]}
+
+Estructura el WBR en JSON con:
+- "periodo": semana evaluada
+- "resumen_ejecutivo": 2-3 oraciones del estado general
+- "kpis_semana": lista de objetos con "kpi", "valor", "target", "semaforo" (verde/amarillo/rojo), "vs_semana_anterior"
+- "logros": lista de logros de la semana
+- "riesgos": lista de riesgos identificados
+- "plan_accion": lista de objetos con "accion", "responsable", "fecha_limite"
+- "outlook_proxima_semana": perspectiva
+"""
+    return _llm_analyze(prompt)
 
 
-def run_resumen_equipo(resultados: list[dict]) -> dict:
-    """Genera resumen de actividad de todos los agentes."""
+def run_consolidar_mbr(file_bytes: bytes | None, filename: str,
+                        texto: str = "",
+                        resultados_previos: list[dict] | None = None) -> dict:
+    insumos = []
+    if file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+        insumos.append({"fuente": "archivo", "datos": _df_summary(df, "MBR")})
+
+    if resultados_previos:
+        for r in resultados_previos:
+            insumos.append({
+                "agente": r.get("agent_name", "?"),
+                "skill": r.get("skill_name", "?"),
+                "fecha": r.get("fecha", "?"),
+                "datos": r.get("resultado", {}),
+            })
+
+    if not insumos:
+        return {"error": "Se necesitan datos para el MBR"}
+
+    contexto = texto if texto else "mes actual"
+
+    prompt = f"""Genera un reporte MBR (Monthly Business Review) para comite ejecutivo de call center.
+
+Periodo: {contexto}
+
+Insumos consolidados del equipo:
+{json.dumps(insumos, ensure_ascii=False, default=str)[:4000]}
+
+Estructura el MBR en JSON con:
+- "periodo": mes evaluado
+- "resumen_ejecutivo": resumen de 3-5 oraciones
+- "kpis_mes": lista de objetos con "kpi", "valor", "target", "cumplimiento_pct", "tendencia"
+- "financiero": resumen de facturacion, bonos y penalidades
+- "calidad": resumen de calidad y hallazgos
+- "operativo": resumen de staffing y capacidad
+- "top_3_logros": lista
+- "top_3_riesgos": lista con "riesgo" y "mitigacion"
+- "plan_estrategico": acciones para el proximo mes
+- "forecast_proximo_mes": proyeccion
+"""
+    return _llm_analyze(prompt)
+
+
+def run_analisis_cruzado(file_bytes: bytes | None, filename: str,
+                          texto: str = "",
+                          resultados_previos: list[dict] | None = None) -> dict:
+    insumos = []
+    if file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+        insumos.append(_df_summary(df, "Cruzado"))
+
+    if resultados_previos:
+        for r in resultados_previos:
+            insumos.append({
+                "agente": r.get("agent_name", "?"),
+                "skill": r.get("skill_name", "?"),
+                "datos": r.get("resultado", {}),
+            })
+
+    if len(insumos) < 2:
+        return {"error": "Se necesitan al menos 2 fuentes para analisis cruzado"}
+
+    prompt = f"""Analiza estos datos de multiples fuentes de call center y genera correlaciones:
+
+{json.dumps(insumos, ensure_ascii=False, default=str)[:4000]}
+
+{f"Contexto adicional: {texto}" if texto else ""}
+
+Responde en JSON con:
+- "correlaciones": lista de relaciones encontradas entre KPIs
+- "patrones": patrones comunes detectados
+- "anomalias": datos atipicos o inconsistencias
+- "insights": hallazgos clave para la operacion
+- "recomendaciones": acciones basadas en el analisis
+"""
+    return _llm_analyze(prompt)
+
+
+def run_resumen_equipo(resultados_previos: list[dict] | None = None) -> dict:
     from collections import Counter
+    all_results = resultados_previos if resultados_previos else load_all_results()
 
-    agentes_actividad = Counter()
-    skills_actividad = Counter()
+    agentes = Counter()
+    skills = Counter()
     fechas = set()
 
-    for r in resultados:
-        agentes_actividad[r.get("agent_name", "Desconocido")] += 1
-        skills_actividad[r.get("skill_name", "Desconocida")] += 1
+    for r in all_results:
+        agentes[r.get("agent_name", "?")] += 1
+        skills[r.get("skill_name", "?")] += 1
         fechas.add(r.get("fecha", ""))
 
     return {
-        "total_tareas": len(resultados),
-        "agentes_activos": dict(agentes_actividad),
-        "habilidades_usadas": dict(skills_actividad),
+        "total_tareas": len(all_results),
+        "agentes_activos": dict(agentes),
+        "habilidades_usadas": dict(skills),
         "dias_activos": len(fechas),
         "fechas": sorted(fechas),
-        "agente_mas_activo": agentes_actividad.most_common(1)[0] if agentes_actividad else None,
-        "skill_mas_usada": skills_actividad.most_common(1)[0] if skills_actividad else None,
+        "agente_mas_activo": agentes.most_common(1)[0] if agentes else None,
+        "skill_mas_usada": skills.most_common(1)[0] if skills else None,
     }
 
 
-# ── Dispatcher principal ───────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════
+#  Dispatcher principal
+# ══════════════════════════════════════════════════════════════════════
+
 
 SKILL_RUNNERS = {
+    # CORTEX
+    "ingesta_acd": run_ingesta_acd,
+    "ingesta_qa": run_ingesta_qa,
+    "ingesta_cx": run_ingesta_cx,
+    "validar_fuentes": run_validar_fuentes,
     "transcribir_audio": run_transcribir_audio,
-    "detectar_idioma": run_detectar_idioma,
-    "identificar_hablantes": run_identificar_hablantes,
     "generar_dialogo": run_generar_dialogo,
-    "evaluar_calidad": run_evaluar_calidad,
-    "generar_reporte": run_generar_reporte,
+    # NEXUS
+    "calcular_carga_trabajo": run_calcular_carga_trabajo,
+    "calcular_tmo": run_calcular_tmo,
+    "calcular_staffing": run_calcular_staffing,
+    # SENTINEL
+    "evaluar_llamada": run_evaluar_llamada,
+    "monitoreo_kpis": run_monitoreo_kpis,
+    "detectar_rac": run_detectar_rac,
+    "generar_reporte_calidad": run_generar_reporte_calidad,
+    # LEDGER
+    "calcular_facturacion": run_calcular_facturacion,
+    "calcular_bonos": run_calcular_bonos,
+    "calcular_penalidades": run_calcular_penalidades,
+    # ATLAS
+    "consolidar_wbr": run_consolidar_wbr,
+    "consolidar_mbr": run_consolidar_mbr,
     "analisis_cruzado": run_analisis_cruzado,
-    "detectar_tendencias": run_detectar_tendencias,
     "resumen_equipo": run_resumen_equipo,
 }
 
 
 def execute_skill(agent_id: str, skill_id: str, skill_name: str,
                   audio_bytes: bytes | None = None,
+                  file_bytes: bytes | None = None,
                   filename: str = "",
                   texto: str = "",
                   resultado_previo: dict | None = None,
                   resultados_multiples: list[dict] | None = None) -> dict:
-    """
-    Ejecuta una habilidad y guarda el resultado con versionado.
-    Retorna el record completo guardado.
-    """
     runner = SKILL_RUNNERS.get(skill_id)
     if not runner:
         return {"error": f"Habilidad '{skill_id}' no implementada"}
 
-    # Determinar argumentos segun el tipo de skill
     try:
-        if skill_id in ("transcribir_audio", "detectar_idioma", "identificar_hablantes"):
+        # ── CORTEX: audio ──
+        if skill_id in ("transcribir_audio",):
             if not audio_bytes:
                 return {"error": "Se requiere un archivo de audio"}
             result = runner(audio_bytes, filename)
@@ -407,12 +939,49 @@ def execute_skill(agent_id: str, skill_id: str, skill_name: str,
                 return {"error": "Se requiere un archivo de audio"}
             result = runner(audio_bytes, filename, resultado_previo)
 
-        elif skill_id in ("evaluar_calidad", "generar_reporte"):
-            result = runner(texto, resultado_previo)
+        # ── CORTEX: datos ──
+        elif skill_id in ("ingesta_acd", "ingesta_qa", "ingesta_cx"):
+            if not file_bytes:
+                return {"error": "Se requiere un archivo de datos"}
+            result = runner(file_bytes, filename)
 
-        elif skill_id in ("analisis_cruzado", "detectar_tendencias", "resumen_equipo"):
+        # ── Multi-resultado (validar, monitoreo, rac, atlas, etc) ──
+        elif skill_id in ("validar_fuentes", "resumen_equipo"):
             items = resultados_multiples or []
             result = runner(items)
+
+        elif skill_id in ("monitoreo_kpis", "detectar_rac"):
+            result = runner(
+                file_bytes, filename,
+                resultados_previos=resultados_multiples,
+            ) if file_bytes else runner(
+                None, "",
+                resultados_previos=resultados_multiples,
+            )
+            if skill_id == "detectar_rac":
+                result = run_detectar_rac(texto, resultados_multiples)
+
+        # ── NEXUS ──
+        elif skill_id in ("calcular_carga_trabajo", "calcular_tmo"):
+            result = runner(file_bytes, filename, resultado_previo)
+
+        elif skill_id == "calcular_staffing":
+            result = runner(file_bytes, filename, texto, resultados_multiples)
+
+        # ── SENTINEL: evaluacion ──
+        elif skill_id == "evaluar_llamada":
+            result = runner(texto, resultado_previo)
+
+        elif skill_id == "generar_reporte_calidad":
+            result = runner(texto, resultado_previo)
+
+        # ── LEDGER ──
+        elif skill_id in ("calcular_facturacion", "calcular_bonos", "calcular_penalidades"):
+            result = runner(file_bytes, filename, texto, resultados_multiples)
+
+        # ── ATLAS ──
+        elif skill_id in ("consolidar_wbr", "consolidar_mbr", "analisis_cruzado"):
+            result = runner(file_bytes, filename, texto, resultados_multiples)
 
         else:
             return {"error": f"Skill '{skill_id}' sin dispatcher configurado"}
@@ -421,7 +990,6 @@ def execute_skill(agent_id: str, skill_id: str, skill_name: str,
         logger.error("Error ejecutando %s/%s: %s", agent_id, skill_id, e)
         result = {"error": str(e)}
 
-    # Guardar resultado versionado
     input_summary = filename if filename else (texto[:100] + "..." if len(texto) > 100 else texto)
     record = save_result(agent_id, skill_id, skill_name, result, input_summary)
     return record
