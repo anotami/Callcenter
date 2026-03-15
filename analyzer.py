@@ -8,7 +8,7 @@ import re
 import time
 import logging
 from openai import OpenAI
-from config import LLM_BASE_URL, LLM_MODEL
+from config import LLM_BASE_URL, LLM_MODEL, LLM_API_KEY
 from prompts import SYSTEM_PROMPT, build_evaluation_prompt
 
 logger = logging.getLogger("callcenter.analyzer")
@@ -26,7 +26,7 @@ def create_llm_client() -> OpenAI:
     """
     client = OpenAI(
         base_url=LLM_BASE_URL,
-        api_key="not-needed",
+        api_key=LLM_API_KEY,
     )
     logger.info("Cliente creado -> %s (modelo: %s)", LLM_BASE_URL, LLM_MODEL)
     return client

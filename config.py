@@ -32,9 +32,10 @@ WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "es")
 # HuggingFace (para pyannote)
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 
-# LLM (LM Studio / Ollama)
+# LLM (Groq, LM Studio, Ollama, o cualquier API compatible con OpenAI)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:1234/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.1-8b-instruct")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "not-needed")
 
 # SQL Server
 SQL_SERVER = os.getenv("SQL_SERVER", "localhost")

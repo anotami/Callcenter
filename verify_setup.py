@@ -67,8 +67,8 @@ def main():
     print("\n[6/7] LLM Local (LM Studio / Ollama)")
     def check_llm():
         from openai import OpenAI
-        from config import LLM_BASE_URL, LLM_MODEL
-        client = OpenAI(base_url=LLM_BASE_URL, api_key="not-needed")
+        from config import LLM_BASE_URL, LLM_MODEL, LLM_API_KEY
+        client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
         models = client.models.list()
         model_names = [m.id for m in models.data]
         if model_names:
