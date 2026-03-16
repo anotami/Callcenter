@@ -457,6 +457,44 @@ AGENTS = {
                 "agentes_compatibles": ["cortex", "nexus", "sentinel", "ledger"],
                 "multi_resultado": True,
             },
+            {
+                "id": "informe_por_modulo",
+                "nombre": "Informe por Modulos",
+                "descripcion": (
+                    "Genera informes individuales detallados por cada modulo (Datos, Capacidad, "
+                    "Calidad, Financiero). Cada informe incluye KPIs, hallazgos, alertas y "
+                    "recomendaciones con trazabilidad completa de fuentes."
+                ),
+                "datos_necesarios": [
+                    "Resultados de 1 o mas agentes",
+                ],
+                "resultado": "Informes detallados por modulo con dashboard, conclusiones y fuentes",
+                "acepta_archivo": True,
+                "extensiones": [".csv", ".xlsx", ".xls", ".json"],
+                "acepta_texto": True,
+                "acepta_resultado_previo": True,
+                "agentes_compatibles": ["cortex", "nexus", "sentinel", "ledger"],
+                "multi_resultado": True,
+            },
+            {
+                "id": "informe_consolidado",
+                "nombre": "Informe Consolidado 360",
+                "descripcion": (
+                    "Genera el informe ejecutivo mas completo: consolida TODOS los modulos "
+                    "en una vision 360 con dashboard ejecutivo, analisis cruzado, conclusiones "
+                    "estrategicas y plan de accion. Indica la fuente de cada dato."
+                ),
+                "datos_necesarios": [
+                    "Resultados de multiples agentes (idealmente todos)",
+                ],
+                "resultado": "Informe 360 con score de operacion, dashboard, conclusiones y plan de accion",
+                "acepta_archivo": True,
+                "extensiones": [".csv", ".xlsx", ".xls", ".json"],
+                "acepta_texto": True,
+                "acepta_resultado_previo": True,
+                "agentes_compatibles": ["cortex", "nexus", "sentinel", "ledger"],
+                "multi_resultado": True,
+            },
         ],
     },
 }

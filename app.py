@@ -79,6 +79,176 @@ AGENT_ICONS = {
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".wma"}
 
+_SEMAFORO = {"verde": ":green_circle:", "amarillo": ":yellow_circle:", "rojo": ":red_circle:"}
+
+
+def _render_atlas_report(data: dict):
+    """Renderiza informes de ATLAS con dashboard, modulos, conclusiones y fuentes."""
+    import pandas as pd
+
+    # ── Dashboard ejecutivo (Informe Consolidado 360) ──
+    dash = data.get("dashboard_ejecutivo")
+    if dash:
+        st.markdown("#### Dashboard Ejecutivo")
+        dc1, dc2 = st.columns(2)
+        estado = dash.get("estado_general", "?")
+        dc1.metric("Estado General", f"{_SEMAFORO.get(estado, '')} {estado.upper()}")
+        dc2.metric("Score Operacion", f"{dash.get('score_operacion', 'N/A')}/100")
+        kpis_dash = dash.get("kpis_principales", [])
+        if kpis_dash:
+            st.dataframe(pd.DataFrame(kpis_dash), use_container_width=True)
+        st.markdown("---")
+
+    # ── Dashboard KPIs (WBR/MBR) ──
+    kpis_list = data.get("dashboard_kpis")
+    if kpis_list and isinstance(kpis_list, list):
+        st.markdown("#### Dashboard de KPIs")
+        for kpi in kpis_list:
+            sem = _SEMAFORO.get(kpi.get("semaforo", ""), "")
+            fuente = kpi.get("fuente", "")
+            val = kpi.get("valor", "?")
+            tgt = kpi.get("target", "?")
+            st.markdown(f"- {sem} **{kpi.get('kpi', '?')}**: {val} (target: {tgt}) — _{fuente}_")
+        st.markdown("---")
+
+    # ── Resumen ejecutivo ──
+    resumen = data.get("resumen_ejecutivo")
+    if resumen:
+        st.markdown("#### Resumen Ejecutivo")
+        st.info(resumen)
+
+    # ── Informes por modulo (formato lista — informe_por_modulo skill) ──
+    informes_lista = data.get("informes")
+    if informes_lista and isinstance(informes_lista, list):
+        st.markdown("#### Informes por Modulo")
+        for inf in informes_lista:
+            modulo = inf.get("modulo", "?")
+            agente = inf.get("agente_responsable", "")
+            estado = inf.get("estado_general", "?")
+            sem = _SEMAFORO.get(estado, "")
+            with st.expander(f"{sem} {modulo} ({agente}) — Estado: {estado.upper()}"):
+                if inf.get("resumen"):
+                    st.markdown(f"**Resumen:** {inf['resumen']}")
+                kpis = inf.get("kpis", [])
+                if kpis:
+                    st.markdown("**KPIs:**")
+                    st.dataframe(pd.DataFrame(kpis), use_container_width=True)
+                for section, label in [("hallazgos", "Hallazgos"), ("alertas", "Alertas"),
+                                        ("fortalezas", "Fortalezas"), ("oportunidades_mejora", "Oportunidades de Mejora"),
+                                        ("recomendaciones", "Recomendaciones")]:
+                    items = inf.get(section, [])
+                    if items:
+                        st.markdown(f"**{label}:**")
+                        for item in items:
+                            if isinstance(item, dict):
+                                txt = item.get("hallazgo", item.get("texto", str(item)))
+                                fuente = item.get("fuente", "")
+                                st.markdown(f"- {txt}" + (f" — _{fuente}_" if fuente else ""))
+                            else:
+                                st.markdown(f"- {item}")
+
+    # ── Informes por modulo (formato dict — WBR/MBR/Consolidado) ──
+    informe_dict = data.get("informe_por_modulo")
+    if informe_dict and isinstance(informe_dict, dict):
+        st.markdown("#### Informes por Modulo")
+        for mod_key, mod_data in informe_dict.items():
+            if not isinstance(mod_data, dict):
+                continue
+            titulo = mod_data.get("titulo", mod_key.upper())
+            estado = mod_data.get("estado", mod_data.get("estado_general", "?"))
+            sem = _SEMAFORO.get(estado, "")
+            with st.expander(f"{sem} {titulo} — Estado: {estado.upper()}"):
+                if mod_data.get("analisis"):
+                    st.markdown(f"**Analisis:** {mod_data['analisis']}")
+                if mod_data.get("resumen"):
+                    st.markdown(f"**Resumen:** {mod_data['resumen']}")
+                kpis = mod_data.get("kpis", [])
+                if kpis:
+                    st.markdown("**KPIs:**")
+                    st.dataframe(pd.DataFrame(kpis), use_container_width=True)
+                for section, label in [("hallazgos", "Hallazgos"), ("alertas", "Alertas"),
+                                        ("recomendaciones", "Recomendaciones")]:
+                    items = mod_data.get(section, [])
+                    if items:
+                        st.markdown(f"**{label}:**")
+                        for item in items:
+                            if isinstance(item, dict):
+                                st.markdown(f"- {item}")
+                            else:
+                                st.markdown(f"- {item}")
+
+    # ── Analisis cruzado (Consolidado) ──
+    cruzado = data.get("analisis_cruzado")
+    if cruzado and isinstance(cruzado, dict):
+        st.markdown("---")
+        st.markdown("#### Analisis Cruzado entre Modulos")
+        for section, label in [("correlaciones", "Correlaciones"), ("dependencias", "Dependencias"),
+                                ("cuellos_botella", "Cuellos de Botella")]:
+            items = cruzado.get(section, [])
+            if items:
+                st.markdown(f"**{label}:**")
+                for item in items:
+                    st.markdown(f"- {item}" if isinstance(item, str) else f"- {item}")
+
+    # ── Conclusiones ──
+    conclusiones = data.get("conclusiones")
+    if conclusiones:
+        st.markdown("---")
+        st.markdown("#### Conclusiones")
+        for c in conclusiones:
+            if isinstance(c, dict):
+                impacto = c.get("impacto", "")
+                badge = f" **[{impacto.upper()}]**" if impacto else ""
+                mods = ", ".join(c.get("modulos_relacionados", []))
+                fuentes = c.get("fuentes", "")
+                st.markdown(f"- {c.get('conclusion', str(c))}{badge}" +
+                            (f" ({mods})" if mods else "") +
+                            (f" — _{fuentes}_" if fuentes else ""))
+            else:
+                st.markdown(f"- {c}")
+
+    # ── Riesgos ──
+    riesgos = data.get("riesgos") or data.get("top_3_riesgos")
+    if riesgos:
+        st.markdown("---")
+        st.markdown("#### Riesgos")
+        for r in riesgos:
+            if isinstance(r, dict):
+                st.markdown(
+                    f"- **{r.get('riesgo', '?')}** — "
+                    f"Mitigacion: {r.get('mitigacion', 'N/A')}"
+                    + (f" — _{r.get('fuente', '')}_" if r.get("fuente") else "")
+                )
+            else:
+                st.markdown(f"- {r}")
+
+    # ── Plan de accion ──
+    plan = data.get("plan_accion")
+    if plan:
+        st.markdown("---")
+        st.markdown("#### Plan de Accion")
+        st.dataframe(pd.DataFrame(plan), use_container_width=True)
+
+    # ── Forecast ──
+    forecast = data.get("forecast") or data.get("forecast_proximo_mes") or data.get("outlook_proxima_semana")
+    if forecast:
+        st.markdown("---")
+        st.markdown("#### Proyeccion / Outlook")
+        st.info(forecast if isinstance(forecast, str) else json.dumps(forecast, ensure_ascii=False))
+
+    # ── Fuentes utilizadas ──
+    fuentes = data.get("fuentes_utilizadas")
+    if fuentes:
+        st.markdown("---")
+        with st.expander("Fuentes de datos utilizadas"):
+            st.dataframe(pd.DataFrame(fuentes), use_container_width=True)
+
+    # ── Nota metodologica ──
+    nota = data.get("nota_metodologica")
+    if nota:
+        st.caption(f"Nota metodologica: {nota}")
+
+
 # ── Sidebar ────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -809,10 +979,12 @@ else:
                     st.markdown("---")
                     st.markdown("### Resultado")
 
-                    cm1, cm2, cm3 = st.columns(3)
+                    cm1, cm2, cm3, cm4 = st.columns(4)
                     cm1.metric("Agente", result.get("agent_name", ""))
                     cm2.metric("Version", f"v{result.get('version', 1)}")
                     cm3.metric("Fecha", result.get("fecha", ""))
+                    pv = result.get("prompt_version", 0)
+                    cm4.metric("Prompt", f"v{pv}" if pv else "default")
 
                     data = result.get("resultado", {})
 
@@ -834,6 +1006,11 @@ else:
                                 st.markdown("**Recomendaciones:**")
                                 for rec in data["recomendaciones"]:
                                     st.markdown(f"- {rec}")
+
+                        # ── ATLAS: Informes con dashboard ──────────────
+                        elif data.get("dashboard_ejecutivo") or data.get("dashboard_kpis") or data.get("informe_por_modulo") or data.get("informes"):
+                            _render_atlas_report(data)
+
                         elif "kpis" in data or "kpis_semana" in data or "kpis_mes" in data:
                             kpis = data.get("kpis") or data.get("kpis_semana") or data.get("kpis_mes", [])
                             if kpis:
@@ -843,6 +1020,16 @@ else:
                                 st.markdown(f"**Resumen:** {data['resumen_ejecutivo']}")
                             if data.get("alertas"):
                                 st.warning("**Alertas:** " + " | ".join(str(a) for a in data["alertas"]))
+                            # Render fuentes y conclusiones si existen
+                            if data.get("conclusiones"):
+                                st.markdown("**Conclusiones:**")
+                                for c in data["conclusiones"]:
+                                    st.markdown(f"- {c}")
+                            if data.get("fuentes_utilizadas"):
+                                with st.expander("Fuentes de datos utilizadas"):
+                                    import pandas as pd
+                                    st.dataframe(pd.DataFrame(data["fuentes_utilizadas"]), use_container_width=True)
+
                         elif "resultado" in data and "agentes_minimos" in data.get("resultado", {}):
                             # Staffing
                             r = data["resultado"]
@@ -856,6 +1043,10 @@ else:
                             if data.get("agentes_activos"):
                                 for ag, cnt in data["agentes_activos"].items():
                                     st.markdown(f"- **{ag}**: {cnt} tareas")
+                            if data.get("detalle_tareas"):
+                                with st.expander("Detalle de tareas recientes"):
+                                    import pandas as pd
+                                    st.dataframe(pd.DataFrame(data["detalle_tareas"]), use_container_width=True)
                         elif "errores_criticos" in data:
                             st.metric("Riesgo General", data.get("riesgo_general", "?"))
                             st.metric("Errores Detectados", data.get("total_errores", 0))
@@ -891,9 +1082,11 @@ else:
     agent_history = load_all_results(agent_id)
     if agent_history:
         for rec in agent_history[:10]:
+            pv = rec.get("prompt_version", 0)
+            pv_label = f" | prompt v{pv}" if pv else ""
             with st.expander(
                 f"{rec.get('skill_name', '?')} v{rec.get('version', 1)} "
-                f"- {rec.get('fecha', '')} {rec.get('hora', '')}"
+                f"- {rec.get('fecha', '')} {rec.get('hora', '')}{pv_label}"
             ):
                 st.caption(f"Input: {rec.get('input_summary', 'N/A')}")
                 res = rec.get("resultado", {})

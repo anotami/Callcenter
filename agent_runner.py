@@ -74,7 +74,8 @@ def _next_version(agent_id: str, skill_id: str) -> int:
 
 
 def save_result(agent_id: str, skill_id: str, skill_name: str,
-                result_data, input_summary: str = "") -> dict:
+                result_data, input_summary: str = "",
+                prompt_version: int | None = None) -> dict:
     version = _next_version(agent_id, skill_id)
     now = datetime.now()
     record = {
@@ -87,6 +88,7 @@ def save_result(agent_id: str, skill_id: str, skill_name: str,
         "hora": now.strftime("%H:%M:%S"),
         "timestamp": now.isoformat(),
         "input_summary": input_summary,
+        "prompt_version": prompt_version,
         "resultado": result_data,
     }
     path = _result_path(agent_id, skill_id, version)
@@ -945,43 +947,111 @@ Responde en JSON con:
 # ══════════════════════════════════════════════════════════════════════
 
 
-def run_consolidar_wbr(file_bytes: bytes | None, filename: str,
-                        texto: str = "",
-                        resultados_previos: list[dict] | None = None) -> dict:
+def _build_atlas_insumos(file_bytes, filename, resultados_previos):
+    """Construye la lista de insumos con trazabilidad completa para Atlas."""
     insumos = []
     if file_bytes:
         df = _load_dataframe(file_bytes, filename)
-        insumos.append({"fuente": "archivo", "datos": _df_summary(df, "WBR")})
+        insumos.append({
+            "fuente_tipo": "archivo",
+            "fuente_archivo": filename,
+            "agente_origen": "carga_directa",
+            "datos": _df_summary(df, filename),
+        })
 
     if resultados_previos:
         for r in resultados_previos:
             insumos.append({
-                "agente": r.get("agent_name", "?"),
-                "skill": r.get("skill_name", "?"),
-                "fecha": r.get("fecha", "?"),
+                "fuente_tipo": "resultado_agente",
+                "agente_origen": r.get("agent_name", "?"),
+                "agente_id": r.get("agent_id", "?"),
+                "skill_origen": r.get("skill_name", "?"),
+                "skill_id": r.get("skill_id", "?"),
+                "version_resultado": r.get("version", 1),
+                "prompt_version": r.get("prompt_version", 0),
+                "fecha_resultado": r.get("fecha", "?"),
+                "hora_resultado": r.get("hora", "?"),
+                "archivo_origen": r.get("input_summary", ""),
                 "datos": r.get("resultado", {}),
             })
+    return insumos
+
+
+def _classify_insumos_by_module(insumos: list[dict]) -> dict:
+    """Clasifica insumos por modulo/agente para reportes por seccion."""
+    modules = {
+        "datos": [],       # CORTEX
+        "capacidad": [],   # NEXUS
+        "calidad": [],     # SENTINEL
+        "financiero": [],  # LEDGER
+        "otros": [],
+    }
+    agent_map = {
+        "CORTEX": "datos", "cortex": "datos",
+        "NEXUS": "capacidad", "nexus": "capacidad",
+        "SENTINEL": "calidad", "sentinel": "calidad",
+        "LEDGER": "financiero", "ledger": "financiero",
+    }
+    for ins in insumos:
+        agent = ins.get("agente_origen", ins.get("agente_id", ""))
+        category = agent_map.get(agent, "otros")
+        modules[category].append(ins)
+    return {k: v for k, v in modules.items() if v}
+
+
+_ATLAS_SOURCE_INSTRUCTIONS = """
+IMPORTANTE - TRAZABILIDAD DE FUENTES:
+Para CADA dato, metrica o KPI que menciones, DEBES indicar su origen con el formato:
+  [Fuente: AGENTE / skill / archivo | fecha]
+Ejemplo: "Nivel de servicio: 82% [Fuente: NEXUS / Calcular Staffing / datos_marzo.csv | 2026-03-15]"
+
+Esto es CRITICO para la auditabilidad del informe.
+"""
+
+
+def run_consolidar_wbr(file_bytes: bytes | None, filename: str,
+                        texto: str = "",
+                        resultados_previos: list[dict] | None = None) -> dict:
+    insumos = _build_atlas_insumos(file_bytes, filename, resultados_previos)
 
     if not insumos:
         return {"error": "Se necesitan datos de al menos 2 agentes para el WBR"}
 
+    modules = _classify_insumos_by_module(insumos)
     contexto = texto if texto else "semana actual"
 
-    prompt = f"""Genera un reporte WBR (Weekly Business Review) para comite ejecutivo de call center.
+    prompt = f"""Genera un reporte WBR (Weekly Business Review) COMPLETO para comite ejecutivo de call center.
 
 Periodo: {contexto}
 
-Insumos de los agentes del equipo:
+{_ATLAS_SOURCE_INSTRUCTIONS}
+
+Insumos del equipo (con trazabilidad):
 {json.dumps(insumos, ensure_ascii=False, default=str)[:4000]}
 
+Modulos con datos disponibles: {list(modules.keys())}
+
 Estructura el WBR en JSON con:
+
 - "periodo": semana evaluada
-- "resumen_ejecutivo": 2-3 oraciones del estado general
-- "kpis_semana": lista de objetos con "kpi", "valor", "target", "semaforo" (verde/amarillo/rojo), "vs_semana_anterior"
+- "resumen_ejecutivo": 3-5 oraciones del estado general con CONCLUSION clara
+
+- "fuentes_utilizadas": lista de objetos con "agente", "skill", "archivo", "fecha" (una entrada por cada insumo usado)
+
+- "informe_por_modulo": objeto con una clave por modulo disponible, cada uno con:
+  - "titulo": nombre del modulo (ej: "Datos e Ingesta", "Capacidad WFM", "Calidad", "Financiero")
+  - "estado": "verde"/"amarillo"/"rojo"
+  - "kpis": lista de objetos con "nombre", "valor", "target", "semaforo", "fuente" (agente+skill+archivo que lo genero)
+  - "hallazgos": lista de hallazgos con fuente
+  - "alertas": lista de alertas del modulo
+
+- "dashboard_kpis": lista consolidada de los KPIs mas importantes con "kpi", "valor", "target", "semaforo" (verde/amarillo/rojo), "vs_semana_anterior", "fuente"
+
+- "conclusiones": lista de 3-5 conclusiones clave del analisis
 - "logros": lista de logros de la semana
-- "riesgos": lista de riesgos identificados
-- "plan_accion": lista de objetos con "accion", "responsable", "fecha_limite"
-- "outlook_proxima_semana": perspectiva
+- "riesgos": lista de riesgos con "riesgo", "impacto", "probabilidad", "fuente"
+- "plan_accion": lista de objetos con "accion", "responsable", "fecha_limite", "prioridad"
+- "outlook_proxima_semana": perspectiva con base en datos
 """
     return _llm_analyze(prompt)
 
@@ -989,43 +1059,51 @@ Estructura el WBR en JSON con:
 def run_consolidar_mbr(file_bytes: bytes | None, filename: str,
                         texto: str = "",
                         resultados_previos: list[dict] | None = None) -> dict:
-    insumos = []
-    if file_bytes:
-        df = _load_dataframe(file_bytes, filename)
-        insumos.append({"fuente": "archivo", "datos": _df_summary(df, "MBR")})
-
-    if resultados_previos:
-        for r in resultados_previos:
-            insumos.append({
-                "agente": r.get("agent_name", "?"),
-                "skill": r.get("skill_name", "?"),
-                "fecha": r.get("fecha", "?"),
-                "datos": r.get("resultado", {}),
-            })
+    insumos = _build_atlas_insumos(file_bytes, filename, resultados_previos)
 
     if not insumos:
         return {"error": "Se necesitan datos para el MBR"}
 
+    modules = _classify_insumos_by_module(insumos)
     contexto = texto if texto else "mes actual"
 
-    prompt = f"""Genera un reporte MBR (Monthly Business Review) para comite ejecutivo de call center.
+    prompt = f"""Genera un reporte MBR (Monthly Business Review) COMPLETO para comite ejecutivo de call center.
 
 Periodo: {contexto}
 
-Insumos consolidados del equipo:
+{_ATLAS_SOURCE_INSTRUCTIONS}
+
+Insumos consolidados del equipo (con trazabilidad):
 {json.dumps(insumos, ensure_ascii=False, default=str)[:4000]}
 
+Modulos con datos disponibles: {list(modules.keys())}
+
 Estructura el MBR en JSON con:
+
 - "periodo": mes evaluado
-- "resumen_ejecutivo": resumen de 3-5 oraciones
-- "kpis_mes": lista de objetos con "kpi", "valor", "target", "cumplimiento_pct", "tendencia"
-- "financiero": resumen de facturacion, bonos y penalidades
-- "calidad": resumen de calidad y hallazgos
-- "operativo": resumen de staffing y capacidad
+- "resumen_ejecutivo": resumen de 5-8 oraciones con CONCLUSION estrategica
+
+- "fuentes_utilizadas": lista de objetos con "agente", "skill", "archivo", "fecha"
+
+- "informe_por_modulo": objeto con una clave por modulo, cada uno con:
+  - "titulo": nombre descriptivo del modulo
+  - "estado": "verde"/"amarillo"/"rojo"
+  - "kpis": lista con "nombre", "valor", "target", "cumplimiento_pct", "tendencia", "fuente"
+  - "analisis": texto de analisis detallado del modulo
+  - "hallazgos": lista con fuente
+  - "recomendaciones": lista de acciones especificas del modulo
+
+- "dashboard_kpis": lista consolidada de KPIs principales con "kpi", "valor", "target", "cumplimiento_pct", "tendencia", "fuente"
+
+- "financiero": resumen de facturacion, bonos y penalidades con fuentes
+- "calidad": resumen de calidad y hallazgos con fuentes
+- "operativo": resumen de staffing y capacidad con fuentes
+
+- "conclusiones": lista de 5-7 conclusiones estrategicas del mes
 - "top_3_logros": lista
-- "top_3_riesgos": lista con "riesgo" y "mitigacion"
-- "plan_estrategico": acciones para el proximo mes
-- "forecast_proximo_mes": proyeccion
+- "top_3_riesgos": lista con "riesgo", "mitigacion", "fuente"
+- "plan_estrategico": acciones para el proximo mes con prioridad
+- "forecast_proximo_mes": proyeccion basada en tendencias
 """
     return _llm_analyze(prompt)
 
@@ -1033,34 +1111,28 @@ Estructura el MBR en JSON con:
 def run_analisis_cruzado(file_bytes: bytes | None, filename: str,
                           texto: str = "",
                           resultados_previos: list[dict] | None = None) -> dict:
-    insumos = []
-    if file_bytes:
-        df = _load_dataframe(file_bytes, filename)
-        insumos.append(_df_summary(df, "Cruzado"))
-
-    if resultados_previos:
-        for r in resultados_previos:
-            insumos.append({
-                "agente": r.get("agent_name", "?"),
-                "skill": r.get("skill_name", "?"),
-                "datos": r.get("resultado", {}),
-            })
+    insumos = _build_atlas_insumos(file_bytes, filename, resultados_previos)
 
     if len(insumos) < 2:
         return {"error": "Se necesitan al menos 2 fuentes para analisis cruzado"}
 
-    prompt = f"""Analiza estos datos de multiples fuentes de call center y genera correlaciones:
+    prompt = f"""Analiza estos datos de multiples fuentes de call center y genera correlaciones.
 
+{_ATLAS_SOURCE_INSTRUCTIONS}
+
+Datos con trazabilidad de origen:
 {json.dumps(insumos, ensure_ascii=False, default=str)[:4000]}
 
 {f"Contexto adicional: {texto}" if texto else ""}
 
 Responde en JSON con:
-- "correlaciones": lista de relaciones encontradas entre KPIs
-- "patrones": patrones comunes detectados
-- "anomalias": datos atipicos o inconsistencias
-- "insights": hallazgos clave para la operacion
-- "recomendaciones": acciones basadas en el analisis
+- "fuentes_utilizadas": lista de objetos con "agente", "skill", "archivo", "fecha"
+- "correlaciones": lista de objetos con "kpi_a", "kpi_b", "relacion", "fuente_a", "fuente_b"
+- "patrones": lista de patrones detectados con "patron", "evidencia", "fuentes"
+- "anomalias": lista con "anomalia", "valor_esperado", "valor_real", "fuente"
+- "insights": hallazgos clave con fuente
+- "conclusiones": lista de 3-5 conclusiones del analisis cruzado
+- "recomendaciones": acciones basadas en el analisis con prioridad
 """
     return _llm_analyze(prompt)
 
@@ -1072,11 +1144,23 @@ def run_resumen_equipo(resultados_previos: list[dict] | None = None) -> dict:
     agentes = Counter()
     skills = Counter()
     fechas = set()
+    detalle_tareas = []
 
     for r in all_results:
-        agentes[r.get("agent_name", "?")] += 1
-        skills[r.get("skill_name", "?")] += 1
+        agent_name = r.get("agent_name", "?")
+        skill_name = r.get("skill_name", "?")
+        agentes[agent_name] += 1
+        skills[skill_name] += 1
         fechas.add(r.get("fecha", ""))
+        detalle_tareas.append({
+            "agente": agent_name,
+            "skill": skill_name,
+            "archivo": r.get("input_summary", ""),
+            "fecha": r.get("fecha", ""),
+            "hora": r.get("hora", ""),
+            "version": r.get("version", 1),
+            "prompt_version": r.get("prompt_version", 0),
+        })
 
     return {
         "total_tareas": len(all_results),
@@ -1086,7 +1170,115 @@ def run_resumen_equipo(resultados_previos: list[dict] | None = None) -> dict:
         "fechas": sorted(fechas),
         "agente_mas_activo": agentes.most_common(1)[0] if agentes else None,
         "skill_mas_usada": skills.most_common(1)[0] if skills else None,
+        "detalle_tareas": detalle_tareas[-20:],  # Ultimas 20 tareas
     }
+
+
+def run_informe_por_modulo(file_bytes: bytes | None, filename: str,
+                            texto: str = "",
+                            resultados_previos: list[dict] | None = None) -> dict:
+    """Genera informes individuales por cada modulo/agente con datos disponibles."""
+    insumos = _build_atlas_insumos(file_bytes, filename, resultados_previos)
+
+    if not insumos:
+        return {"error": "Se necesitan resultados de agentes para generar informes por modulo"}
+
+    modules = _classify_insumos_by_module(insumos)
+    contexto = texto if texto else "periodo actual"
+
+    prompt = f"""Genera un INFORME DETALLADO POR MODULO del call center.
+
+Periodo: {contexto}
+
+{_ATLAS_SOURCE_INSTRUCTIONS}
+
+Datos disponibles por modulo:
+{json.dumps(modules, ensure_ascii=False, default=str)[:4000]}
+
+Para CADA modulo que tenga datos, genera un informe individual completo.
+
+Responde en JSON con:
+
+- "periodo": periodo evaluado
+- "fuentes_utilizadas": lista de objetos con "agente", "skill", "archivo", "fecha"
+
+- "informes": lista de objetos, uno por modulo, cada uno con:
+  - "modulo": nombre del modulo ("Datos e Ingesta" / "Capacidad WFM" / "Calidad" / "Financiero")
+  - "agente_responsable": nombre del agente (CORTEX/NEXUS/SENTINEL/LEDGER)
+  - "estado_general": "verde"/"amarillo"/"rojo"
+  - "resumen": 2-3 oraciones del estado del modulo
+  - "kpis": lista con "nombre", "valor", "target", "semaforo", "fuente"
+  - "hallazgos": lista con "hallazgo" y "fuente"
+  - "alertas": lista de alertas criticas
+  - "fortalezas": lista de aspectos positivos
+  - "oportunidades_mejora": lista de areas a mejorar
+  - "recomendaciones": lista de acciones especificas
+
+- "resumen_ejecutivo": vision general de todos los modulos
+- "conclusiones": lista de conclusiones clave
+"""
+    return _llm_analyze(prompt)
+
+
+def run_informe_consolidado(file_bytes: bytes | None, filename: str,
+                             texto: str = "",
+                             resultados_previos: list[dict] | None = None) -> dict:
+    """Genera un informe consolidado que integra todos los modulos en una vision 360."""
+    insumos = _build_atlas_insumos(file_bytes, filename, resultados_previos)
+
+    if not insumos:
+        return {"error": "Se necesitan resultados de multiples agentes para el informe consolidado"}
+
+    modules = _classify_insumos_by_module(insumos)
+    contexto = texto if texto else "periodo actual"
+
+    prompt = f"""Genera un INFORME CONSOLIDADO 360 del call center que integre TODOS los modulos.
+
+Periodo: {contexto}
+
+{_ATLAS_SOURCE_INSTRUCTIONS}
+
+Datos completos del equipo (con trazabilidad):
+{json.dumps(insumos, ensure_ascii=False, default=str)[:4000]}
+
+Modulos disponibles: {list(modules.keys())}
+
+Este informe debe ser la vision COMPLETA y EJECUTIVA de la operacion. Responde en JSON con:
+
+- "titulo": "Informe Consolidado 360 - Call Center"
+- "periodo": periodo evaluado
+- "fecha_generacion": fecha actual
+
+- "fuentes_utilizadas": lista completa con "agente", "skill", "archivo", "fecha", "version"
+
+- "dashboard_ejecutivo": objeto con:
+  - "estado_general": "verde"/"amarillo"/"rojo"
+  - "score_operacion": numero 0-100 representando salud general
+  - "kpis_principales": lista de los 5-8 KPIs mas criticos con "nombre", "valor", "target", "semaforo", "tendencia", "fuente"
+
+- "informe_por_modulo": objeto con clave por modulo:
+  - "datos": resumen CORTEX con estado, kpis clave, hallazgos, fuentes
+  - "capacidad": resumen NEXUS con estado, kpis clave, hallazgos, fuentes
+  - "calidad": resumen SENTINEL con estado, kpis clave, hallazgos, fuentes
+  - "financiero": resumen LEDGER con estado, kpis clave, hallazgos, fuentes
+
+- "analisis_cruzado": objeto con:
+  - "correlaciones": relaciones detectadas entre modulos
+  - "dependencias": como un modulo afecta a otro
+  - "cuellos_botella": donde estan los problemas principales
+
+- "conclusiones": lista de 5-8 conclusiones estrategicas, cada una con:
+  - "conclusion": texto
+  - "impacto": alto/medio/bajo
+  - "modulos_relacionados": lista de modulos afectados
+  - "fuentes": de donde viene esta conclusion
+
+- "plan_accion": lista priorizada con "accion", "responsable", "modulo", "prioridad" (1-5), "plazo"
+- "riesgos": lista con "riesgo", "probabilidad", "impacto", "mitigacion", "fuente"
+- "forecast": proyeccion para el proximo periodo
+- "nota_metodologica": breve nota sobre las fuentes y limitaciones del analisis
+"""
+    return _llm_analyze(prompt)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1120,6 +1312,8 @@ SKILL_RUNNERS = {
     "consolidar_mbr": run_consolidar_mbr,
     "analisis_cruzado": run_analisis_cruzado,
     "resumen_equipo": run_resumen_equipo,
+    "informe_por_modulo": run_informe_por_modulo,
+    "informe_consolidado": run_informe_consolidado,
 }
 
 
@@ -1193,7 +1387,8 @@ def execute_skill(agent_id: str, skill_id: str, skill_name: str,
             result = runner(file_bytes, filename, texto, resultados_multiples)
 
         # ── ATLAS ──
-        elif skill_id in ("consolidar_wbr", "consolidar_mbr", "analisis_cruzado"):
+        elif skill_id in ("consolidar_wbr", "consolidar_mbr", "analisis_cruzado",
+                           "informe_por_modulo", "informe_consolidado"):
             result = runner(file_bytes, filename, texto, resultados_multiples)
 
         else:
@@ -1207,5 +1402,11 @@ def execute_skill(agent_id: str, skill_id: str, skill_name: str,
         _active_agent_id = None
 
     input_summary = filename if filename else (texto[:100] + "..." if len(texto) > 100 else texto)
-    record = save_result(agent_id, skill_id, skill_name, result, input_summary)
+
+    # Track which prompt version was used
+    from prompt_manager import get_active_version
+    prompt_ver = get_active_version(agent_id)
+
+    record = save_result(agent_id, skill_id, skill_name, result, input_summary,
+                         prompt_version=prompt_ver)
     return record
