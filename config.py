@@ -62,8 +62,8 @@ WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "es")
 HF_TOKEN = _secret("HF_TOKEN", "")
 
 # LLM (Groq, LM Studio, Ollama, o cualquier API compatible con OpenAI)
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama3.2:3b")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
+LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.1-8b-instant")
 LLM_API_KEY = _secret("LLM_API_KEY", "not-needed")
 
 # Groq como proveedor cloud de fallback (opcional)
