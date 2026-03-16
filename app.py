@@ -15,6 +15,10 @@ from agent_runner import (
     execute_skill, load_all_results, RESULTS_DIR,
     run_listar_modelos, run_probar_modelo, save_env_config, load_env_values,
 )
+from prompt_manager import (
+    get_current_prompt, get_prompt_versions, get_active_version,
+    save_prompt, activate_version, load_prompt_version, DEFAULT_PROMPTS,
+)
 
 # ── Config ─────────────────────────────────────────────────────────────
 
@@ -519,6 +523,24 @@ else:
     # ── Lista de Habilidades ───────────────────────────────────────────
     with col_skills:
         st.markdown("### Habilidades")
+
+        # ── Prompt de Especialista (primer boton) ──────────────────────
+        is_prompt_sel = st.session_state.selected_skill == "_prompt_especialista"
+        if st.button(
+            "Prompt de Especialista",
+            key=f"skill__prompt_{agent_id}",
+            use_container_width=True,
+            type="primary" if is_prompt_sel else "secondary",
+            icon=":material/psychology:",
+        ):
+            st.session_state.selected_skill = "_prompt_especialista"
+            st.session_state.execution_result = None
+            st.rerun()
+        active_v = get_active_version(agent_id)
+        v_label = f"v{active_v}" if active_v > 0 else "default"
+        st.caption(f"Personalidad e instrucciones del agente ({v_label})")
+        st.markdown("")
+
         for skill in agent["habilidades"]:
             is_sel = st.session_state.selected_skill == skill["id"]
             if st.button(
@@ -537,6 +559,111 @@ else:
     with col_exec:
         if st.session_state.selected_skill is None:
             st.info("Selecciona una habilidad a la izquierda para ver detalles y ejecutarla.")
+
+        elif st.session_state.selected_skill == "_prompt_especialista":
+            # ── UI de gestion de prompt ────────────────────────────────
+            st.markdown("### :material/psychology: Prompt de Especialista")
+            st.markdown(
+                f"Define la personalidad, instrucciones y comportamiento de **{agent['nombre']}**. "
+                "Este prompt se usa como contexto base en todas las interacciones con el LLM."
+            )
+            st.markdown("---")
+
+            # Estado local para edicion
+            if f"_prompt_edit_{agent_id}" not in st.session_state:
+                st.session_state[f"_prompt_edit_{agent_id}"] = False
+
+            versions = get_prompt_versions(agent_id)
+            active_ver = get_active_version(agent_id)
+            current_text = get_current_prompt(agent_id)
+
+            # ── Informacion de version activa ──────────────────────────
+            col_v1, col_v2, col_v3 = st.columns(3)
+            col_v1.metric("Version Activa", f"v{active_ver}" if active_ver > 0 else "Default")
+            col_v2.metric("Total Versiones", len(versions))
+            col_v3.metric("Caracteres", len(current_text))
+
+            # ── Prompt actual ──────────────────────────────────────────
+            st.markdown("#### Prompt Actual")
+            st.code(current_text, language=None)
+
+            # ── Historial de versiones ─────────────────────────────────
+            if versions:
+                st.markdown("---")
+                st.markdown("#### Historial de Versiones")
+                for v in reversed(versions):
+                    v_num = v["version"]
+                    is_active = v_num == active_ver
+                    badge = " **← ACTIVA**" if is_active else ""
+                    nota_text = f' — "{v["nota"]}"' if v.get("nota") else ""
+                    with st.expander(
+                        f"v{v_num} - {v['fecha']} {v['hora']}{nota_text}{badge}"
+                    ):
+                        v_text = load_prompt_version(agent_id, v_num)
+                        st.code(v_text, language=None)
+                        st.caption(f"{v['caracteres']} caracteres")
+                        if not is_active:
+                            if st.button(
+                                f"Activar v{v_num}",
+                                key=f"activate_{agent_id}_v{v_num}",
+                                type="primary",
+                            ):
+                                activate_version(agent_id, v_num)
+                                st.success(f"v{v_num} activada para {agent['nombre']}")
+                                st.rerun()
+
+                # Opcion de volver al default
+                if active_ver > 0:
+                    if st.button(
+                        "Restaurar Prompt Default",
+                        key=f"restore_default_{agent_id}",
+                        icon=":material/restart_alt:",
+                    ):
+                        activate_version(agent_id, 0)
+                        st.success(f"Prompt de {agent['nombre']} restaurado al default.")
+                        st.rerun()
+
+            # ── Editar / Crear nueva version ───────────────────────────
+            st.markdown("---")
+            st.markdown("#### Editar Prompt")
+            st.caption("Modifica el prompt y guarda como nueva version. Las versiones anteriores se conservan.")
+
+            new_prompt = st.text_area(
+                "Prompt del agente",
+                value=current_text,
+                height=300,
+                key=f"_ta_prompt_{agent_id}",
+                label_visibility="collapsed",
+            )
+            nota = st.text_input(
+                "Nota de version (opcional)",
+                placeholder="Ej: Agregado criterio de retencion, mejorado tono...",
+                key=f"_nota_prompt_{agent_id}",
+            )
+
+            col_save, col_cancel = st.columns(2)
+            with col_save:
+                has_changes = new_prompt.strip() != current_text.strip()
+                if st.button(
+                    "Guardar Nueva Version",
+                    use_container_width=True,
+                    type="primary",
+                    disabled=not has_changes,
+                    icon=":material/save:",
+                    key=f"_save_prompt_{agent_id}",
+                ):
+                    info = save_prompt(agent_id, new_prompt.strip(), nota)
+                    st.success(
+                        f"Prompt v{info['version']} guardado para {agent['nombre']} "
+                        f"({info['caracteres']} caracteres)"
+                    )
+                    st.rerun()
+            with col_cancel:
+                if has_changes:
+                    st.caption("Hay cambios sin guardar")
+                else:
+                    st.caption("Sin cambios")
+
         else:
             skill = get_skill(agent_id, st.session_state.selected_skill)
             if not skill:

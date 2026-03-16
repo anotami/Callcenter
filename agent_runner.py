@@ -39,6 +39,7 @@ logger = logging.getLogger("callcenter.agent_runner")
 
 # Contenedor de progreso activo (se usa desde _llm_analyze y execute_skill)
 _active_status_container = None
+_active_agent_id = None
 
 # Directorio donde se guardan los resultados versionados
 RESULTS_DIR = BASE_DIR / "agent_results"
@@ -181,11 +182,19 @@ def _df_summary(df, nombre_fuente: str = "datos") -> dict:
 
 def _llm_analyze(prompt: str, system: str = "") -> dict:
     """Envia un prompt al LLM con fallback entre modelos y retorna JSON parseado."""
-    global _active_status_container
+    global _active_status_container, _active_agent_id
     from analyzer import call_llm, _extract_json
+    from prompt_manager import get_current_prompt
 
     if not system:
-        system = "Eres un analista experto de operaciones de call center. Responde SIEMPRE en JSON."
+        # Usar prompt de especialista del agente si esta disponible
+        agent_prompt = ""
+        if _active_agent_id:
+            agent_prompt = get_current_prompt(_active_agent_id)
+        if agent_prompt:
+            system = agent_prompt + "\n\nResponde SIEMPRE en formato JSON estructurado."
+        else:
+            system = "Eres un analista experto de operaciones de call center. Responde SIEMPRE en JSON."
 
     messages = [
         {"role": "system", "content": system},
@@ -1069,8 +1078,9 @@ def execute_skill(agent_id: str, skill_id: str, skill_name: str,
                   resultado_previo: dict | None = None,
                   resultados_multiples: list[dict] | None = None,
                   status_container=None) -> dict:
-    global _active_status_container
+    global _active_status_container, _active_agent_id
     _active_status_container = status_container
+    _active_agent_id = agent_id
 
     runner = SKILL_RUNNERS.get(skill_id)
     if not runner:
@@ -1141,6 +1151,7 @@ def execute_skill(agent_id: str, skill_id: str, skill_name: str,
         result = {"error": str(e)}
     finally:
         _active_status_container = None
+        _active_agent_id = None
 
     input_summary = filename if filename else (texto[:100] + "..." if len(texto) > 100 else texto)
     record = save_result(agent_id, skill_id, skill_name, result, input_summary)
