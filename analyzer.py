@@ -12,6 +12,7 @@ from openai import OpenAI
 from config import (
     LLM_BASE_URL, LLM_MODEL, LLM_API_KEY,
     LLM_FALLBACK_MODELS, LLM_MAX_RETRIES,
+    GROQ_API_KEY, GROQ_BASE_URL, GROQ_FALLBACK_MODELS,
 )
 from prompts import SYSTEM_PROMPT, build_evaluation_prompt
 
@@ -20,23 +21,36 @@ logger = logging.getLogger("callcenter.analyzer")
 RETRY_DELAY_SECONDS = 2
 
 
-def create_llm_client() -> OpenAI:
+def create_llm_client(base_url: str = LLM_BASE_URL,
+                      api_key: str = LLM_API_KEY) -> OpenAI:
     """Crea cliente OpenAI apuntando a Groq, LM Studio, Ollama, etc."""
     client = OpenAI(
-        base_url=LLM_BASE_URL,
-        api_key=LLM_API_KEY,
+        base_url=base_url,
+        api_key=api_key,
     )
-    logger.info("Cliente creado -> %s", LLM_BASE_URL)
+    logger.info("Cliente creado -> %s", base_url)
     return client
 
 
-def _get_model_queue() -> list[str]:
-    """Construye la lista ordenada de modelos a intentar (principal + fallbacks)."""
-    models = [LLM_MODEL]
+def _get_model_queue() -> list[tuple[str, str, str]]:
+    """
+    Construye la lista ordenada de (modelo, base_url, api_key) a intentar.
+    Primero modelos locales, luego Groq si tiene API key configurada.
+    """
+    entries: list[tuple[str, str, str]] = []
+
+    # Modelo principal + fallbacks locales
+    entries.append((LLM_MODEL, LLM_BASE_URL, LLM_API_KEY))
     for m in LLM_FALLBACK_MODELS:
-        if m != LLM_MODEL and m not in models:
-            models.append(m)
-    return models
+        if m != LLM_MODEL:
+            entries.append((m, LLM_BASE_URL, LLM_API_KEY))
+
+    # Modelos Groq (solo si hay API key)
+    if GROQ_API_KEY:
+        for m in GROQ_FALLBACK_MODELS:
+            entries.append((m, GROQ_BASE_URL, GROQ_API_KEY))
+
+    return entries
 
 
 def _try_streamlit_progress(message: str):
@@ -57,34 +71,36 @@ def call_llm(
     status_container=None,
 ) -> tuple[str, str]:
     """
-    Llama al LLM con fallback automatico entre modelos.
-    Intenta hasta LLM_MAX_RETRIES veces rotando modelos.
+    Llama al LLM con fallback automatico entre modelos y proveedores.
+    Intenta modelos locales primero, luego Groq si esta configurado.
 
     Args:
         messages: Lista de mensajes [{role, content}]
         temperature: Temperatura de generacion
         max_tokens: Tokens maximos de respuesta
-        client: Cliente OpenAI (si None, crea uno nuevo)
+        client: Cliente OpenAI (si None, usa los configurados por proveedor)
         status_container: Contenedor de Streamlit para mostrar progreso (opcional)
 
     Returns:
         Tupla (respuesta_texto, modelo_usado)
     """
-    if client is None:
-        client = create_llm_client()
+    model_queue = _get_model_queue()
+    max_retries = min(LLM_MAX_RETRIES, max(len(model_queue), 3))
 
-    models = _get_model_queue()
-    max_retries = min(LLM_MAX_RETRIES, max(len(models), 5))
+    # Cache de clientes por base_url para no recrearlos
+    _clients: dict[str, OpenAI] = {}
+    if client is not None:
+        _clients[LLM_BASE_URL] = client
 
     last_error = None
     for attempt in range(1, max_retries + 1):
-        model_idx = (attempt - 1) % len(models)
-        model = models[model_idx]
+        idx = (attempt - 1) % len(model_queue)
+        model, base_url, api_key = model_queue[idx]
 
-        progress_msg = f"Intento {attempt}/{max_retries} - Modelo: {model}"
+        provider = "Groq" if "groq.com" in base_url else "Local"
+        progress_msg = f"Intento {attempt}/{max_retries} - {provider}: {model}"
         logger.info(progress_msg)
 
-        # Mostrar progreso en Streamlit si hay contenedor
         if status_container is not None:
             try:
                 status_container.update(label=progress_msg, state="running")
@@ -93,18 +109,22 @@ def call_llm(
         else:
             _try_streamlit_progress(progress_msg)
 
+        # Obtener o crear cliente para este proveedor
+        if base_url not in _clients:
+            _clients[base_url] = create_llm_client(base_url, api_key)
+        current_client = _clients[base_url]
+
         try:
-            response = client.chat.completions.create(
+            response = current_client.chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
             raw = response.choices[0].message.content
-            logger.info("OK con modelo '%s' (%d chars)", model, len(raw))
+            logger.info("OK con modelo '%s' [%s] (%d chars)", model, provider, len(raw))
 
-            # Exito - mostrar en UI
-            ok_msg = f"Respuesta recibida de {model}"
+            ok_msg = f"Respuesta recibida de {model} ({provider})"
             if status_container is not None:
                 try:
                     status_container.update(label=ok_msg, state="complete")
@@ -117,7 +137,7 @@ def call_llm(
 
         except Exception as e:
             last_error = e
-            err_msg = f"Intento {attempt}/{max_retries} fallo ({model}): {e}"
+            err_msg = f"Intento {attempt}/{max_retries} fallo ({provider}/{model}): {e}"
             logger.warning(err_msg)
 
             if status_container is not None:
@@ -127,9 +147,10 @@ def call_llm(
                     pass
 
             if attempt < max_retries:
-                next_model = models[attempt % len(models)]
+                next_idx = attempt % len(model_queue)
+                next_model = model_queue[next_idx][0]
                 wait = min(RETRY_DELAY_SECONDS * attempt, 10)
-                logger.info("Esperando %ds... siguiente modelo: %s", wait, next_model)
+                logger.info("Esperando %ds... siguiente: %s", wait, next_model)
                 time.sleep(wait)
 
     error_msg = f"Fallo tras {max_retries} intentos. Ultimo error: {last_error}"
