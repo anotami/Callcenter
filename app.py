@@ -919,18 +919,15 @@ else:
     st.markdown(f"# {agent['nombre']}")
     st.markdown(f'<span class="agent-role">{agent["rol"]}</span>', unsafe_allow_html=True)
     st.markdown(agent["descripcion"])
-    st.markdown("---")
 
-    col_skills, col_exec = st.columns([1, 2])
-
-    # ── Lista de Habilidades ───────────────────────────────────────────
-    with col_skills:
-        st.markdown("### Habilidades")
-
-        # ── Prompt de Especialista (primer boton) ──────────────────────
-        is_prompt_sel = st.session_state.selected_skill == "_prompt_especialista"
+    # ── Boton Configurar Prompt (arriba) ───────────────────────────────
+    active_v = get_active_version(agent_id)
+    v_label = f"v{active_v}" if active_v > 0 else "default"
+    is_prompt_sel = st.session_state.selected_skill == "_prompt_especialista"
+    prompt_col1, prompt_col2 = st.columns([1, 3])
+    with prompt_col1:
         if st.button(
-            "Prompt de Especialista",
+            "Configurar Prompt",
             key=f"skill__prompt_{agent_id}",
             use_container_width=True,
             type="primary" if is_prompt_sel else "secondary",
@@ -939,403 +936,413 @@ else:
             st.session_state.selected_skill = "_prompt_especialista"
             st.session_state.execution_result = None
             st.rerun()
-        active_v = get_active_version(agent_id)
-        v_label = f"v{active_v}" if active_v > 0 else "default"
+    with prompt_col2:
         st.caption(f"Personalidad e instrucciones del agente ({v_label})")
-        st.markdown("")
 
-        for skill in agent["habilidades"]:
-            is_sel = st.session_state.selected_skill == skill["id"]
-            if st.button(
-                skill["nombre"],
-                key=f"skill_{skill['id']}",
-                use_container_width=True,
-                type="primary" if is_sel else "secondary",
-            ):
-                st.session_state.selected_skill = skill["id"]
-                st.session_state.execution_result = None
-                st.rerun()
-            st.caption(skill["descripcion"][:90])
-            st.markdown("")
+    st.markdown("---")
 
-    # ── Panel de Ejecucion ─────────────────────────────────────────────
-    with col_exec:
-        if st.session_state.selected_skill is None:
-            st.info("Selecciona una habilidad a la izquierda para ver detalles y ejecutarla.")
+    # ── Matriz de Habilidades ──────────────────────────────────────────
+    st.markdown("### Habilidades")
+    skills = agent["habilidades"]
+    n_cols = min(len(skills), 3)
+    skill_rows = [skills[i:i + n_cols] for i in range(0, len(skills), n_cols)]
 
-        elif st.session_state.selected_skill == "_prompt_especialista":
-            # ── UI de gestion de prompt ────────────────────────────────
-            st.markdown("### :material/psychology: Prompt de Especialista")
-            st.markdown(
-                f"Define la personalidad, instrucciones y comportamiento de **{agent['nombre']}**. "
-                "Este prompt se usa como contexto base en todas las interacciones con el LLM."
-            )
-            st.markdown("---")
-
-            # Estado local para edicion
-            if f"_prompt_edit_{agent_id}" not in st.session_state:
-                st.session_state[f"_prompt_edit_{agent_id}"] = False
-
-            versions = get_prompt_versions(agent_id)
-            active_ver = get_active_version(agent_id)
-            current_text = get_current_prompt(agent_id)
-
-            # ── Informacion de version activa ──────────────────────────
-            col_v1, col_v2, col_v3 = st.columns(3)
-            col_v1.metric("Version Activa", f"v{active_ver}" if active_ver > 0 else "Default")
-            col_v2.metric("Total Versiones", len(versions))
-            col_v3.metric("Caracteres", len(current_text))
-
-            # ── Prompt actual ──────────────────────────────────────────
-            st.markdown("#### Prompt Actual")
-            st.code(current_text, language=None)
-
-            # ── Historial de versiones ─────────────────────────────────
-            if versions:
-                st.markdown("---")
-                st.markdown("#### Historial de Versiones")
-                for v in reversed(versions):
-                    v_num = v["version"]
-                    is_active = v_num == active_ver
-                    badge = " **← ACTIVA**" if is_active else ""
-                    nota_text = f' — "{v["nota"]}"' if v.get("nota") else ""
-                    with st.expander(
-                        f"v{v_num} - {v['fecha']} {v['hora']}{nota_text}{badge}"
-                    ):
-                        v_text = load_prompt_version(agent_id, v_num)
-                        st.code(v_text, language=None)
-                        st.caption(f"{v['caracteres']} caracteres")
-                        if not is_active:
-                            if st.button(
-                                f"Activar v{v_num}",
-                                key=f"activate_{agent_id}_v{v_num}",
-                                type="primary",
-                            ):
-                                activate_version(agent_id, v_num)
-                                st.success(f"v{v_num} activada para {agent['nombre']}")
-                                st.rerun()
-
-                # Opcion de volver al default
-                if active_ver > 0:
+    for row in skill_rows:
+        cols = st.columns(n_cols)
+        for j, skill_item in enumerate(row):
+            with cols[j]:
+                is_sel = st.session_state.selected_skill == skill_item["id"]
+                with st.container(border=True):
                     if st.button(
-                        "Restaurar Prompt Default",
-                        key=f"restore_default_{agent_id}",
-                        icon=":material/restart_alt:",
+                        skill_item["nombre"],
+                        key=f"skill_{skill_item['id']}",
+                        use_container_width=True,
+                        type="primary" if is_sel else "secondary",
                     ):
-                        activate_version(agent_id, 0)
-                        st.success(f"Prompt de {agent['nombre']} restaurado al default.")
+                        st.session_state.selected_skill = skill_item["id"]
+                        st.session_state.execution_result = None
                         st.rerun()
+                    st.caption(skill_item["descripcion"][:100])
 
-            # ── Editar / Crear nueva version ───────────────────────────
+    st.markdown("---")
+
+    # ── Panel de Ejecucion (debajo de la matriz) ──────────────────────
+    if st.session_state.selected_skill is None:
+        st.info("Selecciona una habilidad arriba para ver detalles y ejecutarla.")
+
+    elif st.session_state.selected_skill == "_prompt_especialista":
+        # ── UI de gestion de prompt ────────────────────────────────
+        st.markdown("### :material/psychology: Prompt de Especialista")
+        st.markdown(
+            f"Define la personalidad, instrucciones y comportamiento de **{agent['nombre']}**. "
+            "Este prompt se usa como contexto base en todas las interacciones con el LLM."
+        )
+        st.markdown("---")
+
+        # Estado local para edicion
+        if f"_prompt_edit_{agent_id}" not in st.session_state:
+            st.session_state[f"_prompt_edit_{agent_id}"] = False
+
+        versions = get_prompt_versions(agent_id)
+        active_ver = get_active_version(agent_id)
+        current_text = get_current_prompt(agent_id)
+
+        # ── Informacion de version activa ──────────────────────────
+        col_v1, col_v2, col_v3 = st.columns(3)
+        col_v1.metric("Version Activa", f"v{active_ver}" if active_ver > 0 else "Default")
+        col_v2.metric("Total Versiones", len(versions))
+        col_v3.metric("Caracteres", len(current_text))
+
+        # ── Prompt actual ──────────────────────────────────────────
+        st.markdown("#### Prompt Actual")
+        st.code(current_text, language=None)
+
+        # ── Historial de versiones ─────────────────────────────────
+        if versions:
             st.markdown("---")
-            st.markdown("#### Editar Prompt")
-            st.caption("Modifica el prompt y guarda como nueva version. Las versiones anteriores se conservan.")
-
-            new_prompt = st.text_area(
-                "Prompt del agente",
-                value=current_text,
-                height=300,
-                key=f"_ta_prompt_{agent_id}",
-                label_visibility="collapsed",
-            )
-            nota = st.text_input(
-                "Nota de version (opcional)",
-                placeholder="Ej: Agregado criterio de retencion, mejorado tono...",
-                key=f"_nota_prompt_{agent_id}",
-            )
-
-            col_save, col_cancel = st.columns(2)
-            with col_save:
-                has_changes = new_prompt.strip() != current_text.strip()
-                if st.button(
-                    "Guardar Nueva Version",
-                    use_container_width=True,
-                    type="primary",
-                    disabled=not has_changes,
-                    icon=":material/save:",
-                    key=f"_save_prompt_{agent_id}",
+            st.markdown("#### Historial de Versiones")
+            for v in reversed(versions):
+                v_num = v["version"]
+                is_active = v_num == active_ver
+                badge = " **← ACTIVA**" if is_active else ""
+                nota_text = f' — "{v["nota"]}"' if v.get("nota") else ""
+                with st.expander(
+                    f"v{v_num} - {v['fecha']} {v['hora']}{nota_text}{badge}"
                 ):
-                    info = save_prompt(agent_id, new_prompt.strip(), nota)
-                    st.success(
-                        f"Prompt v{info['version']} guardado para {agent['nombre']} "
-                        f"({info['caracteres']} caracteres)"
-                    )
+                    v_text = load_prompt_version(agent_id, v_num)
+                    st.code(v_text, language=None)
+                    st.caption(f"{v['caracteres']} caracteres")
+                    if not is_active:
+                        if st.button(
+                            f"Activar v{v_num}",
+                            key=f"activate_{agent_id}_v{v_num}",
+                            type="primary",
+                        ):
+                            activate_version(agent_id, v_num)
+                            st.success(f"v{v_num} activada para {agent['nombre']}")
+                            st.rerun()
+
+            # Opcion de volver al default
+            if active_ver > 0:
+                if st.button(
+                    "Restaurar Prompt Default",
+                    key=f"restore_default_{agent_id}",
+                    icon=":material/restart_alt:",
+                ):
+                    activate_version(agent_id, 0)
+                    st.success(f"Prompt de {agent['nombre']} restaurado al default.")
                     st.rerun()
-            with col_cancel:
-                if has_changes:
-                    st.caption("Hay cambios sin guardar")
-                else:
-                    st.caption("Sin cambios")
 
-        else:
-            skill = get_skill(agent_id, st.session_state.selected_skill)
-            if not skill:
-                st.error("Habilidad no encontrada")
+        # ── Editar / Crear nueva version ───────────────────────────
+        st.markdown("---")
+        st.markdown("#### Editar Prompt")
+        st.caption("Modifica el prompt y guarda como nueva version. Las versiones anteriores se conservan.")
+
+        new_prompt = st.text_area(
+            "Prompt del agente",
+            value=current_text,
+            height=300,
+            key=f"_ta_prompt_{agent_id}",
+            label_visibility="collapsed",
+        )
+        nota = st.text_input(
+            "Nota de version (opcional)",
+            placeholder="Ej: Agregado criterio de retencion, mejorado tono...",
+            key=f"_nota_prompt_{agent_id}",
+        )
+
+        col_save, col_cancel = st.columns(2)
+        with col_save:
+            has_changes = new_prompt.strip() != current_text.strip()
+            if st.button(
+                "Guardar Nueva Version",
+                use_container_width=True,
+                type="primary",
+                disabled=not has_changes,
+                icon=":material/save:",
+                key=f"_save_prompt_{agent_id}",
+            ):
+                info = save_prompt(agent_id, new_prompt.strip(), nota)
+                st.success(
+                    f"Prompt v{info['version']} guardado para {agent['nombre']} "
+                    f"({info['caracteres']} caracteres)"
+                )
+                st.rerun()
+        with col_cancel:
+            if has_changes:
+                st.caption("Hay cambios sin guardar")
             else:
-                st.markdown(f"### {skill['nombre']}")
-                st.markdown(skill["descripcion"])
+                st.caption("Sin cambios")
 
-                st.markdown("**Datos necesarios:**")
-                for d in skill["datos_necesarios"]:
-                    st.markdown(f"- `{d}`")
-                st.markdown(f"**Resultado:** {skill['resultado']}")
-                st.markdown("---")
-                st.markdown("### Ejecutar")
+    else:
+        skill = get_skill(agent_id, st.session_state.selected_skill)
+        if not skill:
+            st.error("Habilidad no encontrada")
+        else:
+            st.markdown(f"### {skill['nombre']}")
+            st.markdown(skill["descripcion"])
 
-                # ── Inputs ─────────────────────────────────────────────
-                uploaded_file = None
-                input_text = ""
-                selected_prev_results = []
+            st.markdown("**Datos necesarios:**")
+            for d in skill["datos_necesarios"]:
+                st.markdown(f"- `{d}`")
+            st.markdown(f"**Resultado:** {skill['resultado']}")
+            st.markdown("---")
+            st.markdown("### Ejecutar")
 
-                if skill.get("acepta_archivo"):
-                    exts = skill.get("extensiones", [])
-                    uploaded_file = st.file_uploader(
-                        f"Archivo ({', '.join(exts)})",
-                        type=[e.lstrip(".") for e in exts],
-                        key=f"upload_{skill['id']}",
-                    )
+            # ── Inputs ─────────────────────────────────────────────
+            uploaded_file = None
+            input_text = ""
+            selected_prev_results = []
 
-                if skill.get("acepta_texto"):
-                    input_text = st.text_area(
-                        "Texto / Parametros",
-                        height=120,
-                        placeholder="Pega texto, dialogo o parametros aqui...",
-                        key=f"text_{skill['id']}",
-                    )
-
-                if skill.get("acepta_resultado_previo"):
-                    compatible = skill.get("agentes_compatibles", [])
-                    is_multi = skill.get("multi_resultado", False)
-
-                    prev_results = []
-                    for ca in compatible:
-                        prev_results.extend(load_all_results(ca))
-                    if skill["id"] == "resumen_equipo":
-                        prev_results = load_all_results()
-
-                    if prev_results:
-                        st.markdown("**Resultados previos disponibles:**")
-                        options = [
-                            f"{r.get('agent_name', '?')} / {r.get('skill_name', '?')} "
-                            f"v{r.get('version', 1)} - {r.get('fecha', '')}"
-                            for r in prev_results
-                        ]
-                        if is_multi:
-                            sel_idx = st.multiselect(
-                                "Selecciona resultados (2+ para analisis)",
-                                range(len(options)),
-                                format_func=lambda i: options[i],
-                                key=f"multi_{skill['id']}",
-                            )
-                            selected_prev_results = [prev_results[i] for i in sel_idx]
-                        else:
-                            sel_idx = st.selectbox(
-                                "Selecciona resultado previo",
-                                range(len(options)),
-                                format_func=lambda i: options[i],
-                                key=f"single_{skill['id']}",
-                            )
-                            if sel_idx is not None:
-                                selected_prev_results = [prev_results[sel_idx]]
-                    else:
-                        st.caption("No hay resultados previos. Ejecuta primero una habilidad compatible.")
-
-                # ── Boton Ejecutar ─────────────────────────────────────
-                st.markdown("")
-                can_exec = (
-                    uploaded_file is not None
-                    or len(input_text.strip()) > 0
-                    or len(selected_prev_results) > 0
+            if skill.get("acepta_archivo"):
+                exts = skill.get("extensiones", [])
+                uploaded_file = st.file_uploader(
+                    f"Archivo ({', '.join(exts)})",
+                    type=[e.lstrip(".") for e in exts],
+                    key=f"upload_{skill['id']}",
                 )
 
-                if st.button(
-                    f"Ejecutar: {skill['nombre']}",
-                    disabled=not can_exec,
-                    use_container_width=True,
-                    type="primary",
-                    key=f"exec_{skill['id']}",
-                ):
-                    with st.status(
-                        f"Ejecutando {skill['nombre']}...",
-                        expanded=True,
-                    ) as status_ui:
-                        audio_bytes = None
-                        file_bytes = None
-                        filename = ""
+            if skill.get("acepta_texto"):
+                input_text = st.text_area(
+                    "Texto / Parametros",
+                    height=120,
+                    placeholder="Pega texto, dialogo o parametros aqui...",
+                    key=f"text_{skill['id']}",
+                )
 
-                        if uploaded_file:
-                            raw = uploaded_file.read()
-                            filename = uploaded_file.name
-                            ext = Path(filename).suffix.lower()
-                            if ext in AUDIO_EXTENSIONS:
-                                audio_bytes = raw
-                            else:
-                                file_bytes = raw
+            if skill.get("acepta_resultado_previo"):
+                compatible = skill.get("agentes_compatibles", [])
+                is_multi = skill.get("multi_resultado", False)
 
-                        resultado_previo = None
-                        if selected_prev_results and not skill.get("multi_resultado"):
-                            resultado_previo = selected_prev_results[0].get("resultado")
+                prev_results = []
+                for ca in compatible:
+                    prev_results.extend(load_all_results(ca))
+                if skill["id"] == "resumen_equipo":
+                    prev_results = load_all_results()
 
-                        result = execute_skill(
-                            agent_id=agent_id,
-                            skill_id=skill["id"],
-                            skill_name=skill["nombre"],
-                            audio_bytes=audio_bytes,
-                            file_bytes=file_bytes,
-                            filename=filename,
-                            texto=input_text,
-                            resultado_previo=resultado_previo,
-                            resultados_multiples=(
-                                selected_prev_results if skill.get("multi_resultado") else None
-                            ),
-                            status_container=status_ui,
+                if prev_results:
+                    st.markdown("**Resultados previos disponibles:**")
+                    options = [
+                        f"{r.get('agent_name', '?')} / {r.get('skill_name', '?')} "
+                        f"v{r.get('version', 1)} - {r.get('fecha', '')}"
+                        for r in prev_results
+                    ]
+                    if is_multi:
+                        sel_idx = st.multiselect(
+                            "Selecciona resultados (2+ para analisis)",
+                            range(len(options)),
+                            format_func=lambda i: options[i],
+                            key=f"multi_{skill['id']}",
                         )
-                        st.session_state.execution_result = result
-                        res_data = result.get("resultado", {})
-                        if isinstance(res_data, dict) and "error" in res_data:
-                            status_ui.update(
-                                label=f"Error: {res_data['error'][:80]}",
-                                state="error",
-                            )
-                        else:
-                            modelo = ""
-                            if isinstance(res_data, dict):
-                                modelo = res_data.get("_modelo_usado", "")
-                            label = f"{skill['nombre']} completado"
-                            if modelo:
-                                label += f" (modelo: {modelo})"
-                            status_ui.update(label=label, state="complete")
-
-                # ── Mostrar Resultado ──────────────────────────────────
-                if st.session_state.execution_result:
-                    result = st.session_state.execution_result
-                    st.markdown("---")
-                    st.markdown("### Resultado")
-
-                    cm1, cm2, cm3, cm4 = st.columns(4)
-                    cm1.metric("Agente", result.get("agent_name", ""))
-                    cm2.metric("Version", f"v{result.get('version', 1)}")
-                    cm3.metric("Fecha", result.get("fecha", ""))
-                    pv = result.get("prompt_version", 0)
-                    cm4.metric("Prompt", f"v{pv}" if pv else "default")
-
-                    data = result.get("resultado", {})
-
-                    if isinstance(data, dict) and "error" in data:
-                        st.error(f"Error: {data['error']}")
-
-                    elif isinstance(data, dict):
-                        # ── VISUALIZAR DATOS: graficos interactivos ──
-                        if data.get("tipo_analisis") == "visualizacion":
-                            figures = get_last_chart_figures()
-                            if figures:
-                                _render_charts(figures, result)
-                            else:
-                                st.info(f"Se generaron {data.get('total_graficos', 0)} graficos.")
-                                for g in data.get("graficos_generados", []):
-                                    st.markdown(f"- {g}")
-
-                        # Render inteligente segun tipo de resultado
-                        elif "dialogo" in data:
-                            st.text_area("Dialogo", data["dialogo"], height=300, disabled=True)
-                        elif "texto_completo" in data:
-                            st.text_area("Transcripcion", data["texto_completo"], height=300, disabled=True)
-                        elif "reporte" in data:
-                            st.code(data["reporte"], language=None)
-                        elif "evaluacion" in data:
-                            st.metric("Puntaje Total", f"{data.get('puntaje_total', 'N/A')}/100")
-                            st.markdown(f"**Resumen:** {data.get('resumen_general', '')}")
-                            if data.get("recomendaciones"):
-                                st.markdown("**Recomendaciones:**")
-                                for rec in data["recomendaciones"]:
-                                    st.markdown(f"- {rec}")
-
-                        # ── ATLAS: Informes con dashboard ──────────────
-                        elif data.get("dashboard_ejecutivo") or data.get("dashboard_kpis") or data.get("informe_por_modulo") or data.get("informes"):
-                            _render_atlas_report(data)
-
-                        elif "kpis" in data or "kpis_semana" in data or "kpis_mes" in data:
-                            kpis = data.get("kpis") or data.get("kpis_semana") or data.get("kpis_mes", [])
-                            if kpis:
-                                import pandas as pd
-                                st.dataframe(pd.DataFrame(kpis), use_container_width=True)
-                            if data.get("resumen_ejecutivo"):
-                                st.markdown(f"**Resumen:** {data['resumen_ejecutivo']}")
-                            if data.get("alertas"):
-                                st.warning("**Alertas:** " + " | ".join(str(a) for a in data["alertas"]))
-                            # Render fuentes y conclusiones si existen
-                            if data.get("conclusiones"):
-                                st.markdown("**Conclusiones:**")
-                                for c in data["conclusiones"]:
-                                    st.markdown(f"- {c}")
-                            if data.get("fuentes_utilizadas"):
-                                with st.expander("Fuentes de datos utilizadas"):
-                                    import pandas as pd
-                                    st.dataframe(pd.DataFrame(data["fuentes_utilizadas"]), use_container_width=True)
-
-                        elif "resultado" in data and "agentes_minimos" in data.get("resultado", {}):
-                            # Staffing
-                            r = data["resultado"]
-                            sc1, sc2, sc3 = st.columns(3)
-                            sc1.metric("Agentes Minimos", r["agentes_minimos"])
-                            sc2.metric("Con Shrinkage", r["agentes_con_shrinkage"])
-                            sc3.metric("NdS Proyectado", f"{r['nivel_servicio_proyectado']}%")
-                            st.metric("Ocupacion", f"{r['ocupacion_pct']}%")
-                        elif "total_tareas" in data:
-                            st.metric("Total Tareas", data["total_tareas"])
-                            if data.get("agentes_activos"):
-                                for ag, cnt in data["agentes_activos"].items():
-                                    st.markdown(f"- **{ag}**: {cnt} tareas")
-                            if data.get("detalle_tareas"):
-                                with st.expander("Detalle de tareas recientes"):
-                                    import pandas as pd
-                                    st.dataframe(pd.DataFrame(data["detalle_tareas"]), use_container_width=True)
-                        elif "errores_criticos" in data:
-                            st.metric("Riesgo General", data.get("riesgo_general", "?"))
-                            st.metric("Errores Detectados", data.get("total_errores", 0))
-                            for err in data.get("errores_criticos", []):
-                                sev = err.get("severidad", "?")
-                                color = "red" if sev == "alta" else "orange" if sev == "media" else "blue"
-                                st.markdown(f"- :{color}[**{sev.upper()}**] {err.get('tipo', '')}: {err.get('descripcion', '')}")
-                        elif "lineas" in data:
-                            # Facturacion
-                            import pandas as pd
-                            st.dataframe(pd.DataFrame(data["lineas"]), use_container_width=True)
-                            st.metric("Total Facturacion", data.get("total_facturacion", "N/A"))
-                        elif "tendencia" in data:
-                            st.metric("Tendencia", data["tendencia"])
-                            st.metric("Promedio", data.get("puntaje_promedio", "N/A"))
-                        else:
-                            st.json(data)
-
-                        with st.expander("Ver JSON completo"):
-                            st.json(data)
-
-                        # ── Auto-graficos para cualquier resultado ──
-                        if data.get("tipo_analisis") != "visualizacion":
-                            with st.expander("Graficos automaticos"):
-                                n = _render_auto_charts(data, result)
-                                if n == 0:
-                                    st.caption("No se detectaron datos suficientes para generar graficos.")
+                        selected_prev_results = [prev_results[i] for i in sel_idx]
                     else:
-                        st.write(data)
+                        sel_idx = st.selectbox(
+                            "Selecciona resultado previo",
+                            range(len(options)),
+                            format_func=lambda i: options[i],
+                            key=f"single_{skill['id']}",
+                        )
+                        if sel_idx is not None:
+                            selected_prev_results = [prev_results[sel_idx]]
+                else:
+                    st.caption("No hay resultados previos. Ejecuta primero una habilidad compatible.")
 
-                    # Exportar resultado como JSON
-                    export_col1, export_col2 = st.columns(2)
-                    with export_col1:
-                        json_str = json.dumps(data, ensure_ascii=False, indent=2, default=str)
-                        st.download_button(
-                            "Descargar JSON",
-                            data=json_str,
-                            file_name=f"{agent_id}_{skill['id']}_{result.get('fecha', '')}_v{result.get('version', 1)}.json",
-                            mime="application/json",
-                            key=f"dl_json_{skill['id']}",
+            # ── Boton Ejecutar ─────────────────────────────────────
+            st.markdown("")
+            can_exec = (
+                uploaded_file is not None
+                or len(input_text.strip()) > 0
+                or len(selected_prev_results) > 0
+            )
+
+            if st.button(
+                f"Ejecutar: {skill['nombre']}",
+                disabled=not can_exec,
+                use_container_width=True,
+                type="primary",
+                key=f"exec_{skill['id']}",
+            ):
+                with st.status(
+                    f"Ejecutando {skill['nombre']}...",
+                    expanded=True,
+                ) as status_ui:
+                    audio_bytes = None
+                    file_bytes = None
+                    filename = ""
+
+                    if uploaded_file:
+                        raw = uploaded_file.read()
+                        filename = uploaded_file.name
+                        ext = Path(filename).suffix.lower()
+                        if ext in AUDIO_EXTENSIONS:
+                            audio_bytes = raw
+                        else:
+                            file_bytes = raw
+
+                    resultado_previo = None
+                    if selected_prev_results and not skill.get("multi_resultado"):
+                        resultado_previo = selected_prev_results[0].get("resultado")
+
+                    result = execute_skill(
+                        agent_id=agent_id,
+                        skill_id=skill["id"],
+                        skill_name=skill["nombre"],
+                        audio_bytes=audio_bytes,
+                        file_bytes=file_bytes,
+                        filename=filename,
+                        texto=input_text,
+                        resultado_previo=resultado_previo,
+                        resultados_multiples=(
+                            selected_prev_results if skill.get("multi_resultado") else None
+                        ),
+                        status_container=status_ui,
+                    )
+                    st.session_state.execution_result = result
+                    res_data = result.get("resultado", {})
+                    if isinstance(res_data, dict) and "error" in res_data:
+                        status_ui.update(
+                            label=f"Error: {res_data['error'][:80]}",
+                            state="error",
                         )
-                    with export_col2:
-                        st.caption(
-                            f"Guardado en: agent_results/{agent_id}/ | "
-                            f"Timestamp: {result.get('timestamp', '')}"
-                        )
+                    else:
+                        modelo = ""
+                        if isinstance(res_data, dict):
+                            modelo = res_data.get("_modelo_usado", "")
+                        label = f"{skill['nombre']} completado"
+                        if modelo:
+                            label += f" (modelo: {modelo})"
+                        status_ui.update(label=label, state="complete")
+
+            # ── Mostrar Resultado ──────────────────────────────────
+            if st.session_state.execution_result:
+                result = st.session_state.execution_result
+                st.markdown("---")
+                st.markdown("### Resultado")
+
+                cm1, cm2, cm3, cm4 = st.columns(4)
+                cm1.metric("Agente", result.get("agent_name", ""))
+                cm2.metric("Version", f"v{result.get('version', 1)}")
+                cm3.metric("Fecha", result.get("fecha", ""))
+                pv = result.get("prompt_version", 0)
+                cm4.metric("Prompt", f"v{pv}" if pv else "default")
+
+                data = result.get("resultado", {})
+
+                if isinstance(data, dict) and "error" in data:
+                    st.error(f"Error: {data['error']}")
+
+                elif isinstance(data, dict):
+                    # ── VISUALIZAR DATOS: graficos interactivos ──
+                    if data.get("tipo_analisis") == "visualizacion":
+                        figures = get_last_chart_figures()
+                        if figures:
+                            _render_charts(figures, result)
+                        else:
+                            st.info(f"Se generaron {data.get('total_graficos', 0)} graficos.")
+                            for g in data.get("graficos_generados", []):
+                                st.markdown(f"- {g}")
+
+                    # Render inteligente segun tipo de resultado
+                    elif "dialogo" in data:
+                        st.text_area("Dialogo", data["dialogo"], height=300, disabled=True)
+                    elif "texto_completo" in data:
+                        st.text_area("Transcripcion", data["texto_completo"], height=300, disabled=True)
+                    elif "reporte" in data:
+                        st.code(data["reporte"], language=None)
+                    elif "evaluacion" in data:
+                        st.metric("Puntaje Total", f"{data.get('puntaje_total', 'N/A')}/100")
+                        st.markdown(f"**Resumen:** {data.get('resumen_general', '')}")
+                        if data.get("recomendaciones"):
+                            st.markdown("**Recomendaciones:**")
+                            for rec in data["recomendaciones"]:
+                                st.markdown(f"- {rec}")
+
+                    # ── ATLAS: Informes con dashboard ──────────────
+                    elif data.get("dashboard_ejecutivo") or data.get("dashboard_kpis") or data.get("informe_por_modulo") or data.get("informes"):
+                        _render_atlas_report(data)
+
+                    elif "kpis" in data or "kpis_semana" in data or "kpis_mes" in data:
+                        kpis = data.get("kpis") or data.get("kpis_semana") or data.get("kpis_mes", [])
+                        if kpis:
+                            import pandas as pd
+                            st.dataframe(pd.DataFrame(kpis), use_container_width=True)
+                        if data.get("resumen_ejecutivo"):
+                            st.markdown(f"**Resumen:** {data['resumen_ejecutivo']}")
+                        if data.get("alertas"):
+                            st.warning("**Alertas:** " + " | ".join(str(a) for a in data["alertas"]))
+                        # Render fuentes y conclusiones si existen
+                        if data.get("conclusiones"):
+                            st.markdown("**Conclusiones:**")
+                            for c in data["conclusiones"]:
+                                st.markdown(f"- {c}")
+                        if data.get("fuentes_utilizadas"):
+                            with st.expander("Fuentes de datos utilizadas"):
+                                import pandas as pd
+                                st.dataframe(pd.DataFrame(data["fuentes_utilizadas"]), use_container_width=True)
+
+                    elif "resultado" in data and "agentes_minimos" in data.get("resultado", {}):
+                        # Staffing
+                        r = data["resultado"]
+                        sc1, sc2, sc3 = st.columns(3)
+                        sc1.metric("Agentes Minimos", r["agentes_minimos"])
+                        sc2.metric("Con Shrinkage", r["agentes_con_shrinkage"])
+                        sc3.metric("NdS Proyectado", f"{r['nivel_servicio_proyectado']}%")
+                        st.metric("Ocupacion", f"{r['ocupacion_pct']}%")
+                    elif "total_tareas" in data:
+                        st.metric("Total Tareas", data["total_tareas"])
+                        if data.get("agentes_activos"):
+                            for ag, cnt in data["agentes_activos"].items():
+                                st.markdown(f"- **{ag}**: {cnt} tareas")
+                        if data.get("detalle_tareas"):
+                            with st.expander("Detalle de tareas recientes"):
+                                import pandas as pd
+                                st.dataframe(pd.DataFrame(data["detalle_tareas"]), use_container_width=True)
+                    elif "errores_criticos" in data:
+                        st.metric("Riesgo General", data.get("riesgo_general", "?"))
+                        st.metric("Errores Detectados", data.get("total_errores", 0))
+                        for err in data.get("errores_criticos", []):
+                            sev = err.get("severidad", "?")
+                            color = "red" if sev == "alta" else "orange" if sev == "media" else "blue"
+                            st.markdown(f"- :{color}[**{sev.upper()}**] {err.get('tipo', '')}: {err.get('descripcion', '')}")
+                    elif "lineas" in data:
+                        # Facturacion
+                        import pandas as pd
+                        st.dataframe(pd.DataFrame(data["lineas"]), use_container_width=True)
+                        st.metric("Total Facturacion", data.get("total_facturacion", "N/A"))
+                    elif "tendencia" in data:
+                        st.metric("Tendencia", data["tendencia"])
+                        st.metric("Promedio", data.get("puntaje_promedio", "N/A"))
+                    else:
+                        st.json(data)
+
+                    with st.expander("Ver JSON completo"):
+                        st.json(data)
+
+                    # ── Auto-graficos para cualquier resultado ──
+                    if data.get("tipo_analisis") != "visualizacion":
+                        with st.expander("Graficos automaticos"):
+                            n = _render_auto_charts(data, result)
+                            if n == 0:
+                                st.caption("No se detectaron datos suficientes para generar graficos.")
+                else:
+                    st.write(data)
+
+                # Exportar resultado como JSON
+                export_col1, export_col2 = st.columns(2)
+                with export_col1:
+                    json_str = json.dumps(data, ensure_ascii=False, indent=2, default=str)
+                    st.download_button(
+                        "Descargar JSON",
+                        data=json_str,
+                        file_name=f"{agent_id}_{skill['id']}_{result.get('fecha', '')}_v{result.get('version', 1)}.json",
+                        mime="application/json",
+                        key=f"dl_json_{skill['id']}",
+                    )
+                with export_col2:
+                    st.caption(
+                        f"Guardado en: agent_results/{agent_id}/ | "
+                        f"Timestamp: {result.get('timestamp', '')}"
+                    )
 
     # ── Historial del agente ───────────────────────────────────────────
     st.markdown("---")
