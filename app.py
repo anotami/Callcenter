@@ -20,6 +20,7 @@ from prompt_manager import (
     get_current_prompt, get_prompt_versions, get_active_version,
     save_prompt, activate_version, load_prompt_version, DEFAULT_PROMPTS,
 )
+from pipeline_runner import get_all_pipelines, execute_pipeline
 
 # ── Config ─────────────────────────────────────────────────────────────
 
@@ -336,10 +337,24 @@ with st.sidebar:
     st.markdown("### Historial Reciente")
     all_results = load_all_results()
     if all_results:
-        for r in all_results[:8]:
+        # Filtro por agente
+        agent_names = sorted(set(r.get("agent_name", "?") for r in all_results))
+        hist_filter = st.selectbox(
+            "Filtrar por agente",
+            ["Todos"] + agent_names,
+            key="_hist_filter",
+            label_visibility="collapsed",
+        )
+        filtered = all_results if hist_filter == "Todos" else [
+            r for r in all_results if r.get("agent_name") == hist_filter
+        ]
+        for r in filtered[:15]:
+            res_data = r.get("resultado", {})
+            has_error = isinstance(res_data, dict) and "error" in res_data
+            icon = ":red_circle:" if has_error else ":green_circle:"
             st.caption(
-                f"{r.get('agent_name', '?')} / {r.get('skill_name', '?')} "
-                f"v{r.get('version', 1)} - {r.get('fecha', '')}"
+                f"{icon} {r.get('agent_name', '?')} / {r.get('skill_name', '?')} "
+                f"v{r.get('version', 1)} - {r.get('fecha', '')} {r.get('hora', '')[:5]}"
             )
     else:
         st.caption("Sin resultados aun.")
@@ -351,6 +366,165 @@ if st.session_state.selected_agent is None:
     st.markdown("### Tu equipo de agentes inteligentes para operaciones de call center")
     st.markdown("---")
 
+    # ── Pipelines Express (One-Click) ─────────────────────────────────
+    st.markdown("### Pipelines Express")
+    st.caption("Ejecuta flujos completos con un solo click. Carga tu archivo y el sistema encadena los agentes automaticamente.")
+
+    pipelines = get_all_pipelines()
+    pip_cols = st.columns(3)
+    for i, (pip_id, pip) in enumerate(pipelines.items()):
+        with pip_cols[i % 3]:
+            with st.container(border=True):
+                st.markdown(f"**{pip.get('icono', '')} {pip['nombre']}**")
+                st.caption(pip["descripcion"])
+                st.caption(f"{len(pip['pasos'])} pasos automaticos")
+
+                if st.button(
+                    f"Abrir",
+                    key=f"pip_open_{pip_id}",
+                    use_container_width=True,
+                ):
+                    st.session_state["_active_pipeline"] = pip_id
+                    st.rerun()
+
+    # ── Pipeline Execution Panel ──────────────────────────────────────
+    active_pip_id = st.session_state.get("_active_pipeline")
+    if active_pip_id and active_pip_id in pipelines:
+        pip = pipelines[active_pip_id]
+        st.markdown("---")
+        st.markdown(f"### {pip.get('icono', '')} {pip['nombre']}")
+        st.markdown(pip["descripcion"])
+
+        # Mostrar pasos del pipeline
+        st.markdown("**Pasos del pipeline:**")
+        for j, paso in enumerate(pip["pasos"]):
+            st.markdown(f"{j+1}. **{paso['agent_id'].upper()}** → {paso['skill_name']}")
+
+        st.markdown("---")
+
+        # Inputs
+        pip_file = None
+        pip_texto = ""
+
+        if pip.get("requiere_archivo"):
+            exts = pip.get("extensiones", [])
+            pip_file = st.file_uploader(
+                f"Archivo ({', '.join(exts)})",
+                type=[e.lstrip(".") for e in exts],
+                key=f"pip_upload_{active_pip_id}",
+            )
+
+        if pip.get("acepta_texto"):
+            pip_texto = st.text_area(
+                "Contexto / Parametros",
+                height=100,
+                placeholder=pip.get("texto_placeholder", "Contexto adicional..."),
+                key=f"pip_texto_{active_pip_id}",
+            )
+
+        col_exec_pip, col_cancel_pip = st.columns(2)
+        with col_exec_pip:
+            can_run = pip_file is not None or not pip.get("requiere_archivo")
+            if st.button(
+                f"Ejecutar Pipeline: {pip['nombre']}",
+                disabled=not can_run,
+                use_container_width=True,
+                type="primary",
+                key=f"pip_exec_{active_pip_id}",
+            ):
+                with st.status(
+                    f"Ejecutando {pip['nombre']}...",
+                    expanded=True,
+                ) as pip_status:
+                    file_bytes = pip_file.read() if pip_file else None
+                    filename = pip_file.name if pip_file else ""
+
+                    def status_cb(step_i, total, desc, state):
+                        try:
+                            pip_status.update(label=desc, state="running" if state == "running" else state)
+                        except Exception:
+                            pass
+
+                    pip_result = execute_pipeline(
+                        pipeline_id=active_pip_id,
+                        file_bytes=file_bytes,
+                        filename=filename,
+                        texto=pip_texto,
+                        status_callback=status_cb,
+                    )
+
+                    st.session_state["_pipeline_result"] = pip_result
+                    errors = pip_result.get("errores", [])
+                    if errors:
+                        pip_status.update(
+                            label=f"Pipeline completado con {len(errors)} error(es)",
+                            state="error",
+                        )
+                    else:
+                        pip_status.update(
+                            label=f"Pipeline completado: {pip_result.get('pasos_completados')}/{pip_result.get('total_pasos')} pasos",
+                            state="complete",
+                        )
+
+        with col_cancel_pip:
+            if st.button("Cerrar Pipeline", use_container_width=True, key=f"pip_close_{active_pip_id}"):
+                st.session_state.pop("_active_pipeline", None)
+                st.session_state.pop("_pipeline_result", None)
+                st.rerun()
+
+        # Mostrar resultado del pipeline
+        pip_result = st.session_state.get("_pipeline_result")
+        if pip_result:
+            st.markdown("---")
+            st.markdown("### Resultado del Pipeline")
+
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("Pasos Completados", f"{pip_result.get('pasos_completados', 0)}/{pip_result.get('total_pasos', 0)}")
+            mc2.metric("Errores", len(pip_result.get("errores", [])))
+            mc3.metric("Pipeline", pip_result.get("pipeline_nombre", ""))
+
+            # Mostrar cada paso
+            resultados = pip_result.get("resultados", [])
+            pasos = pip["pasos"]
+            for j, (paso, res) in enumerate(zip(pasos, resultados)):
+                res_data = res.get("resultado", {})
+                has_error = isinstance(res_data, dict) and "error" in res_data
+                icon = ":red_circle:" if has_error else ":green_circle:"
+                with st.expander(f"{icon} Paso {j+1}: {paso['skill_name']} ({paso['agent_id'].upper()})"):
+                    if has_error:
+                        st.error(res_data["error"])
+                    elif isinstance(res_data, dict):
+                        st.json(res_data)
+                    else:
+                        st.write(res_data)
+
+            # Resultado final destacado
+            final = pip_result.get("resultado_final")
+            if final:
+                st.markdown("---")
+                st.markdown("### Resultado Final")
+                final_data = final.get("resultado", {})
+                if isinstance(final_data, dict) and not final_data.get("error"):
+                    # Render inteligente del resultado final
+                    if final_data.get("dashboard_ejecutivo") or final_data.get("dashboard_kpis") or final_data.get("informe_por_modulo") or final_data.get("informes"):
+                        _render_atlas_report(final_data)
+                    else:
+                        st.json(final_data)
+
+                    # Exportar JSON
+                    json_export = json.dumps(final_data, ensure_ascii=False, indent=2, default=str)
+                    st.download_button(
+                        "Descargar JSON",
+                        data=json_export,
+                        file_name=f"pipeline_{active_pip_id}_{final.get('fecha', '')}.json",
+                        mime="application/json",
+                        key="pip_download_json",
+                    )
+
+    st.markdown("---")
+
+    # ── Agentes ──────────────────────────────────────────────────────
+    st.markdown("### Agentes del Equipo")
     # Mostrar solo agentes operativos (excluir modelos)
     operational_agents = {k: v for k, v in AGENTS.items() if k != "modelos"}
     cols = st.columns(len(operational_agents))
@@ -1146,10 +1320,22 @@ else:
                     else:
                         st.write(data)
 
-                    st.caption(
-                        f"Guardado en: agent_results/{agent_id}/ | "
-                        f"Timestamp: {result.get('timestamp', '')}"
-                    )
+                    # Exportar resultado como JSON
+                    export_col1, export_col2 = st.columns(2)
+                    with export_col1:
+                        json_str = json.dumps(data, ensure_ascii=False, indent=2, default=str)
+                        st.download_button(
+                            "Descargar JSON",
+                            data=json_str,
+                            file_name=f"{agent_id}_{skill['id']}_{result.get('fecha', '')}_v{result.get('version', 1)}.json",
+                            mime="application/json",
+                            key=f"dl_json_{skill['id']}",
+                        )
+                    with export_col2:
+                        st.caption(
+                            f"Guardado en: agent_results/{agent_id}/ | "
+                            f"Timestamp: {result.get('timestamp', '')}"
+                        )
 
     # ── Historial del agente ───────────────────────────────────────────
     st.markdown("---")

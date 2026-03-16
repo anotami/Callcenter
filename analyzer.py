@@ -4,6 +4,7 @@ Compatible con Groq, LM Studio, Ollama, o cualquier API OpenAI-compatible.
 Incluye fallback automatico entre multiples modelos.
 """
 
+import hashlib
 import json
 import re
 import time
@@ -19,6 +20,41 @@ from prompts import SYSTEM_PROMPT, build_evaluation_prompt
 logger = logging.getLogger("callcenter.analyzer")
 
 RETRY_DELAY_SECONDS = 2
+
+# ── Cache de respuestas LLM ──────────────────────────────────────────────
+# Cache en memoria con TTL de 1 hora (key=hash de messages, value=(response, model, timestamp))
+_llm_cache: dict[str, tuple[str, str, float]] = {}
+_CACHE_TTL_SECONDS = 3600  # 1 hora
+_CACHE_MAX_SIZE = 100
+
+
+def _cache_key(messages: list[dict], temperature: float) -> str:
+    """Genera una key de cache basada en el contenido del prompt."""
+    content = json.dumps(messages, ensure_ascii=False, sort_keys=True) + f"|t={temperature}"
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
+def _cache_get(key: str) -> tuple[str, str] | None:
+    """Busca en cache. Retorna (response, model) o None si no existe/expirado."""
+    entry = _llm_cache.get(key)
+    if entry is None:
+        return None
+    response, model, ts = entry
+    if time.time() - ts > _CACHE_TTL_SECONDS:
+        del _llm_cache[key]
+        return None
+    logger.info("Cache HIT para key %s", key)
+    return response, model
+
+
+def _cache_set(key: str, response: str, model: str):
+    """Guarda respuesta en cache."""
+    # Evitar crecimiento ilimitado
+    if len(_llm_cache) >= _CACHE_MAX_SIZE:
+        # Eliminar la entrada mas antigua
+        oldest_key = min(_llm_cache, key=lambda k: _llm_cache[k][2])
+        del _llm_cache[oldest_key]
+    _llm_cache[key] = (response, model, time.time())
 
 
 def create_llm_client(base_url: str | None = None,
@@ -86,6 +122,19 @@ def call_llm(
     Returns:
         Tupla (respuesta_texto, modelo_usado)
     """
+    # Verificar cache primero
+    cache_k = _cache_key(messages, temperature)
+    cached = _cache_get(cache_k)
+    if cached is not None:
+        raw, model_used = cached
+        ok_msg = f"Respuesta desde cache (modelo original: {model_used})"
+        if status_container is not None:
+            try:
+                status_container.update(label=ok_msg, state="complete")
+            except Exception:
+                pass
+        return raw, model_used
+
     model_queue = _get_model_queue()
     max_retries = min(LLM_MAX_RETRIES, max(len(model_queue), 3))
 
@@ -126,6 +175,9 @@ def call_llm(
             raw = response.choices[0].message.content
             logger.info("OK con modelo '%s' [%s] (%d chars)", model, provider, len(raw))
 
+            # Guardar en cache
+            _cache_set(cache_k, raw, model)
+
             ok_msg = f"Respuesta recibida de {model} ({provider})"
             if status_container is not None:
                 try:
@@ -164,24 +216,59 @@ def _extract_json(text: str) -> dict | None:
     """
     Extrae JSON de una respuesta LLM que puede contener texto adicional
     o bloques de codigo markdown (```json ... ```).
+    Incluye reparacion basica de JSON malformado.
     """
+    if not text or not text.strip():
+        return None
+
     # Intentar bloques ```json ... ``` primero
     match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(1).strip())
         except json.JSONDecodeError:
-            pass
+            # Intentar reparar JSON comun
+            repaired = _repair_json(match.group(1).strip())
+            if repaired:
+                return repaired
 
     # Fallback: buscar el objeto JSON mas externo
     json_start = text.find("{")
     json_end = text.rfind("}") + 1
     if json_start != -1 and json_end > json_start:
+        candidate = text[json_start:json_end]
         try:
-            return json.loads(text[json_start:json_end])
+            return json.loads(candidate)
         except json.JSONDecodeError:
-            pass
+            repaired = _repair_json(candidate)
+            if repaired:
+                return repaired
 
+    return None
+
+
+def _repair_json(text: str) -> dict | None:
+    """Intenta reparar JSON malformado comun en respuestas LLM."""
+    if not text:
+        return None
+    fixed = text
+    # Eliminar trailing commas antes de } o ]
+    fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+    # Reemplazar comillas simples por dobles (cuidando escapados)
+    # solo si no hay comillas dobles ya
+    if '"' not in fixed and "'" in fixed:
+        fixed = fixed.replace("'", '"')
+    try:
+        return json.loads(fixed)
+    except json.JSONDecodeError:
+        pass
+    # Intentar truncar en el ultimo } valido
+    for end in range(len(fixed) - 1, 0, -1):
+        if fixed[end] == '}':
+            try:
+                return json.loads(fixed[:end + 1])
+            except json.JSONDecodeError:
+                continue
     return None
 
 

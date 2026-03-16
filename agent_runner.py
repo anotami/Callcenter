@@ -151,45 +151,89 @@ def _load_dataframe(file_bytes: bytes, filename: str):
 
 
 def _df_summary(df, nombre_fuente: str = "datos") -> dict:
-    """Genera resumen estadistico de un DataFrame."""
+    """Genera resumen estadistico de un DataFrame con metricas extendidas."""
     summary = {
         "fuente": nombre_fuente,
         "filas": len(df),
         "columnas": list(df.columns),
         "tipos": {col: str(dtype) for col, dtype in df.dtypes.items()},
     }
-    # Estadisticas para columnas numericas
+    # Estadisticas extendidas para columnas numericas
     num_cols = df.select_dtypes(include=["number"]).columns.tolist()
     if num_cols:
         stats = {}
         for col in num_cols:
+            s = df[col].dropna()
+            if s.empty:
+                stats[col] = {"min": None, "max": None, "promedio": None, "total": None}
+                continue
             stats[col] = {
-                "min": float(df[col].min()) if not df[col].isna().all() else None,
-                "max": float(df[col].max()) if not df[col].isna().all() else None,
-                "promedio": round(float(df[col].mean()), 2) if not df[col].isna().all() else None,
-                "total": round(float(df[col].sum()), 2) if not df[col].isna().all() else None,
+                "min": round(float(s.min()), 2),
+                "max": round(float(s.max()), 2),
+                "promedio": round(float(s.mean()), 2),
+                "mediana": round(float(s.median()), 2),
+                "total": round(float(s.sum()), 2),
+                "std": round(float(s.std()), 2) if len(s) > 1 else 0,
+                "p25": round(float(s.quantile(0.25)), 2),
+                "p75": round(float(s.quantile(0.75)), 2),
+                "nulos": int(df[col].isna().sum()),
             }
         summary["estadisticas"] = stats
+
+    # Distribucion de columnas categoricas
+    cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
+    if cat_cols:
+        cat_dist = {}
+        for col in cat_cols[:5]:
+            nunique = df[col].nunique()
+            if 1 <= nunique <= 30:
+                cat_dist[col] = {
+                    "valores_unicos": nunique,
+                    "top_5": {str(k): int(v) for k, v in df[col].value_counts().head(5).items()},
+                }
+        if cat_dist:
+            summary["categoricas"] = cat_dist
 
     # Muestra de datos
     summary["muestra"] = df.head(5).to_dict(orient="records")
 
-    # Datos faltantes
+    # Datos faltantes con porcentaje
     nulos = df.isnull().sum()
     if nulos.any():
-        summary["datos_faltantes"] = {col: int(n) for col, n in nulos.items() if n > 0}
+        total = len(df)
+        summary["datos_faltantes"] = {
+            col: {"cantidad": int(n), "porcentaje": round(n / total * 100, 1)}
+            for col, n in nulos.items() if n > 0
+        }
+
+    # Calidad de datos (score 0-100)
+    total_cells = len(df) * len(df.columns)
+    total_nulls = int(nulos.sum())
+    completitud = round((1 - total_nulls / max(total_cells, 1)) * 100, 1)
+    summary["calidad_datos"] = {
+        "completitud_pct": completitud,
+        "total_nulos": total_nulls,
+        "filas_duplicadas": int(df.duplicated().sum()),
+    }
 
     return summary
 
 
-def _llm_analyze(prompt: str, system: str = "") -> dict:
-    """Envia un prompt al LLM con fallback entre modelos y retorna JSON parseado."""
+def _llm_analyze(prompt: str, system: str = "",
+                  temperature: float = 0.1, max_tokens: int = 3000) -> dict:
+    """Envia un prompt al LLM con fallback entre modelos y retorna JSON parseado.
+
+    Args:
+        prompt: Prompt de usuario
+        system: System prompt (si vacio, usa el del agente activo)
+        temperature: Temperatura para generacion (0.1 para datos, 0.3 para narrativas)
+        max_tokens: Tokens maximos de respuesta
+    """
     global _active_status_container, _active_agent_id
     from analyzer import call_llm, _extract_json
     from prompt_manager import get_current_prompt
 
     if not system:
-        # Usar prompt de especialista del agente si esta disponible
         agent_prompt = ""
         if _active_agent_id:
             agent_prompt = get_current_prompt(_active_agent_id)
@@ -206,8 +250,8 @@ def _llm_analyze(prompt: str, system: str = "") -> dict:
     try:
         raw, model_used = call_llm(
             messages=messages,
-            temperature=0.1,
-            max_tokens=3000,
+            temperature=temperature,
+            max_tokens=max_tokens,
             status_container=_active_status_container,
         )
     except RuntimeError as e:
@@ -416,37 +460,71 @@ def load_env_values() -> dict[str, str]:
 # ══════════════════════════════════════════════════════════════════════
 
 
+def _fuzzy_match_column(col_lower: str, keywords: list[str]) -> bool:
+    """Busca coincidencia fuzzy entre nombre de columna y keywords."""
+    # Exact substring match
+    for kw in keywords:
+        if kw in col_lower:
+            return True
+    # Normalized match (remove underscores, spaces)
+    normalized = col_lower.replace("_", "").replace(" ", "").replace("-", "")
+    for kw in keywords:
+        kw_norm = kw.replace("_", "").replace(" ", "").replace("-", "")
+        if kw_norm in normalized:
+            return True
+    return False
+
+
+def _detect_kpis(df, keywords_map: dict) -> dict:
+    """Detecta KPIs en un DataFrame usando fuzzy matching."""
+    cols_lower = {c.lower(): c for c in df.columns}
+    kpis_detectados = {}
+
+    for kpi, keywords in keywords_map.items():
+        for col_lower, col_orig in cols_lower.items():
+            if _fuzzy_match_column(col_lower, keywords):
+                is_numeric = df[col_orig].dtype in ["float64", "int64", "float32", "int32"]
+                if not is_numeric:
+                    s = pd.to_numeric(df[col_orig], errors="coerce")
+                    is_numeric = s.notna().sum() > 0
+                    if is_numeric:
+                        col_data = s
+                    else:
+                        continue
+                else:
+                    col_data = df[col_orig]
+
+                kpis_detectados[kpi] = {
+                    "columna": col_orig,
+                    "promedio": round(float(col_data.mean()), 2),
+                    "mediana": round(float(col_data.median()), 2),
+                    "total": round(float(col_data.sum()), 2),
+                    "min": round(float(col_data.min()), 2),
+                    "max": round(float(col_data.max()), 2),
+                }
+                break
+        # Already found this KPI
+        if kpi in kpis_detectados:
+            continue
+
+    return kpis_detectados
+
+
 def run_ingesta_acd(file_bytes: bytes, filename: str) -> dict:
     df = _load_dataframe(file_bytes, filename)
     summary = _df_summary(df, "ACD")
 
-    # Detectar columnas clave de ACD
-    cols_lower = {c.lower(): c for c in df.columns}
-    kpis_detectados = {}
-
     keywords_map = {
-        "llamadas_recibidas": ["recibidas", "offered", "received", "entrantes", "inbound"],
-        "llamadas_atendidas": ["atendidas", "answered", "handled", "contestadas"],
-        "llamadas_abandonadas": ["abandonadas", "abandoned", "lost", "perdidas"],
-        "tmo": ["tmo", "aht", "handle_time", "tiempo_medio"],
-        "nivel_servicio": ["nivel_servicio", "service_level", "nds", "sl", "ans"],
-        "tiempo_espera": ["espera", "wait", "asa", "speed_answer"],
+        "llamadas_recibidas": ["recibidas", "offered", "received", "entrantes", "inbound", "incoming", "total_calls"],
+        "llamadas_atendidas": ["atendidas", "answered", "handled", "contestadas", "connected"],
+        "llamadas_abandonadas": ["abandonadas", "abandoned", "lost", "perdidas", "dropped"],
+        "tmo": ["tmo", "aht", "handle_time", "tiempo_medio", "avg_handle", "duracion_promedio"],
+        "nivel_servicio": ["nivel_servicio", "service_level", "nds", "sl_pct", "ans_pct", "service_pct"],
+        "tiempo_espera": ["espera", "wait", "asa", "speed_answer", "avg_wait", "tiempo_cola"],
+        "abandono_pct": ["abandono", "abandon_rate", "pct_abandonadas", "tasa_abandono"],
     }
 
-    for kpi, keywords in keywords_map.items():
-        for kw in keywords:
-            for col_lower, col_orig in cols_lower.items():
-                if kw in col_lower:
-                    kpis_detectados[kpi] = {
-                        "columna": col_orig,
-                        "promedio": round(float(df[col_orig].mean()), 2) if df[col_orig].dtype in ["float64", "int64"] else None,
-                        "total": round(float(df[col_orig].sum()), 2) if df[col_orig].dtype in ["float64", "int64"] else None,
-                    }
-                    break
-            if kpi in kpis_detectados:
-                break
-
-    summary["kpis_detectados"] = kpis_detectados
+    summary["kpis_detectados"] = _detect_kpis(df, keywords_map)
     summary["tipo_ingesta"] = "ACD"
     return summary
 
@@ -528,22 +606,65 @@ def run_validar_fuentes(resultados: list[dict]) -> dict:
     if len(fuentes) < 2:
         return {"error": "Se necesitan al menos 2 fuentes de datos para validar"}
 
+    # Validacion automatica pre-LLM
+    validacion_auto = {
+        "fuentes_analizadas": len(fuentes),
+        "calidad_por_fuente": [],
+        "alertas_automaticas": [],
+    }
+
+    for f in fuentes:
+        tipo = f.get("tipo_ingesta", "?")
+        filas = f.get("filas", 0)
+        calidad = f.get("calidad_datos", {})
+        completitud = calidad.get("completitud_pct", 100)
+        duplicados = calidad.get("filas_duplicadas", 0)
+
+        validacion_auto["calidad_por_fuente"].append({
+            "fuente": tipo,
+            "filas": filas,
+            "completitud_pct": completitud,
+            "duplicados": duplicados,
+        })
+
+        if completitud < 90:
+            validacion_auto["alertas_automaticas"].append(
+                f"Fuente {tipo}: completitud baja ({completitud}%)")
+        if duplicados > 0:
+            validacion_auto["alertas_automaticas"].append(
+                f"Fuente {tipo}: {duplicados} filas duplicadas")
+        if filas == 0:
+            validacion_auto["alertas_automaticas"].append(
+                f"Fuente {tipo}: sin datos (0 filas)")
+
     resumen = []
     for f in fuentes:
-        resumen.append(f"Fuente {f.get('tipo_ingesta', '?')}: {f.get('filas', 0)} filas, columnas: {f.get('columnas', [])}")
+        resumen.append(
+            f"Fuente {f.get('tipo_ingesta', '?')}: {f.get('filas', 0)} filas, "
+            f"columnas: {f.get('columnas', [])}, "
+            f"calidad: {f.get('calidad_datos', {})}"
+        )
 
     prompt = f"""Analiza estas {len(fuentes)} fuentes de datos de call center y genera un reporte de validacion:
 
 {chr(10).join(resumen)}
 
+Validacion automatica previa:
+{json.dumps(validacion_auto, ensure_ascii=False)}
+
 Responde en JSON con:
 - "consistencia": nivel general (alta/media/baja)
-- "alertas": lista de inconsistencias detectadas
+- "score_calidad": numero 0-100 representando calidad general de los datos
+- "alertas": lista de inconsistencias detectadas (incluir las automaticas + nuevas)
 - "cruces_posibles": que datos se pueden cruzar entre fuentes
 - "datos_faltantes": que informacion falta
-- "recomendaciones": lista de acciones
+- "recomendaciones": lista de acciones para mejorar calidad
 """
-    return _llm_analyze(prompt)
+    result = _llm_analyze(prompt)
+    # Incluir validacion automatica en resultado
+    if isinstance(result, dict) and "error" not in result:
+        result["validacion_automatica"] = validacion_auto
+    return result
 
 
 def run_transcribir_audio(audio_bytes: bytes, filename: str) -> dict:
@@ -897,7 +1018,7 @@ def run_ingesta_wfm(file_bytes: bytes | None, filename: str,
     if texto and texto.strip():
         resumen_json = json.dumps(summary, ensure_ascii=False, cls=_SafeEncoder)
         # Truncar para el prompt
-        resumen_truncado = resumen_json[:6000]
+        resumen_truncado = resumen_json[:12000]
         prompt = f"""Analiza esta base de datos WFM de call center.
 
 Contexto del usuario: {texto}
@@ -1120,7 +1241,7 @@ def run_monitoreo_kpis(file_bytes: bytes | None, filename: str,
     if not datos:
         return {"error": "Se requieren datos de KPIs"}
 
-    resumen = json.dumps(datos, ensure_ascii=False, default=str)[:3000]
+    resumen = json.dumps(datos, ensure_ascii=False, default=str, cls=_SafeEncoder)[:8000]
     prompt = f"""Analiza estos datos de KPIs de calidad de call center:
 
 {resumen}
@@ -1154,7 +1275,7 @@ def run_detectar_rac(texto: str, resultados_previos: list[dict] | None = None) -
 
     prompt = f"""Analiza este contenido de call center y detecta errores criticos (RAC - Resolucion al Cliente):
 
-{contenido[:3000]}
+{contenido[:6000]}
 
 Busca:
 1. Informacion incorrecta proporcionada al cliente
@@ -1212,7 +1333,7 @@ def run_calcular_facturacion(file_bytes: bytes | None, filename: str,
 
     prompt = f"""Calcula la facturacion de un call center con estos datos:
 
-Volumetria: {json.dumps(datos_volumen, ensure_ascii=False, default=str)[:2000]}
+Volumetria: {json.dumps(datos_volumen, ensure_ascii=False, default=str, cls=_SafeEncoder)[:6000]}
 
 Parametros de tarifa: {parametros}
 
@@ -1246,7 +1367,7 @@ def run_calcular_bonos(file_bytes: bytes | None, filename: str,
 
     prompt = f"""Calcula los bonos por desempeno de un call center:
 
-KPIs alcanzados: {json.dumps(kpis, ensure_ascii=False, default=str)[:2500]}
+KPIs alcanzados: {json.dumps(kpis, ensure_ascii=False, default=str, cls=_SafeEncoder)[:6000]}
 
 Tabla de metas/bonos: {metas}
 
@@ -1278,7 +1399,7 @@ def run_calcular_penalidades(file_bytes: bytes | None, filename: str,
 
     prompt = f"""Calcula las penalidades por incumplimiento de SLAs:
 
-KPIs del periodo: {json.dumps(kpis, ensure_ascii=False, default=str)[:2500]}
+KPIs del periodo: {json.dumps(kpis, ensure_ascii=False, default=str, cls=_SafeEncoder)[:6000]}
 
 SLAs contractuales: {slas}
 
@@ -1357,6 +1478,47 @@ Ejemplo: "Nivel de servicio: 82% [Fuente: NEXUS / Calcular Staffing / datos_marz
 Esto es CRITICO para la auditabilidad del informe.
 """
 
+# Limite de caracteres para insumos en prompts de ATLAS.
+# Valor anterior era 4000 que causaba perdida de datos silenciosa.
+_ATLAS_INSUMOS_LIMIT = 16000
+
+
+def _smart_truncate_insumos(insumos, max_chars: int = _ATLAS_INSUMOS_LIMIT) -> str:
+    """Serializa insumos con truncacion inteligente que preserva datos clave.
+
+    En lugar de truncar el JSON completo (perdiendo insumos enteros),
+    reduce los datos de cada insumo progresivamente si excede el limite.
+    """
+    full = json.dumps(insumos, ensure_ascii=False, default=str, cls=_SafeEncoder)
+    if len(full) <= max_chars:
+        return full
+
+    # Fase 1: Eliminar muestra de datos (lo mas pesado y menos util para LLM)
+    trimmed = []
+    for ins in insumos:
+        ins_copy = dict(ins)
+        datos = ins_copy.get("datos", {})
+        if isinstance(datos, dict):
+            datos_copy = dict(datos)
+            datos_copy.pop("muestra", None)
+            datos_copy.pop("muestra_verbatims", None)
+            # Reducir estadisticas a solo promedio si existen
+            stats = datos_copy.get("estadisticas", {})
+            if isinstance(stats, dict) and len(stats) > 10:
+                datos_copy["estadisticas"] = {
+                    k: {"promedio": v.get("promedio"), "total": v.get("total")}
+                    for k, v in list(stats.items())[:15]
+                }
+            ins_copy["datos"] = datos_copy
+        trimmed.append(ins_copy)
+
+    result = json.dumps(trimmed, ensure_ascii=False, default=str, cls=_SafeEncoder)
+    if len(result) <= max_chars:
+        return result
+
+    # Fase 2: Truncar con indicador
+    return result[:max_chars - 50] + '\n... [DATOS TRUNCADOS - usar resultados originales para detalle]'
+
 
 def run_consolidar_wbr(file_bytes: bytes | None, filename: str,
                         texto: str = "",
@@ -1376,7 +1538,7 @@ Periodo: {contexto}
 {_ATLAS_SOURCE_INSTRUCTIONS}
 
 Insumos del equipo (con trazabilidad):
-{json.dumps(insumos, ensure_ascii=False, default=str)[:4000]}
+{_smart_truncate_insumos(insumos)}
 
 Modulos con datos disponibles: {list(modules.keys())}
 
@@ -1402,7 +1564,7 @@ Estructura el WBR en JSON con:
 - "plan_accion": lista de objetos con "accion", "responsable", "fecha_limite", "prioridad"
 - "outlook_proxima_semana": perspectiva con base en datos
 """
-    return _llm_analyze(prompt)
+    return _llm_analyze(prompt, temperature=0.3, max_tokens=4000)
 
 
 def run_consolidar_mbr(file_bytes: bytes | None, filename: str,
@@ -1423,7 +1585,7 @@ Periodo: {contexto}
 {_ATLAS_SOURCE_INSTRUCTIONS}
 
 Insumos consolidados del equipo (con trazabilidad):
-{json.dumps(insumos, ensure_ascii=False, default=str)[:4000]}
+{_smart_truncate_insumos(insumos)}
 
 Modulos con datos disponibles: {list(modules.keys())}
 
@@ -1454,7 +1616,7 @@ Estructura el MBR en JSON con:
 - "plan_estrategico": acciones para el proximo mes con prioridad
 - "forecast_proximo_mes": proyeccion basada en tendencias
 """
-    return _llm_analyze(prompt)
+    return _llm_analyze(prompt, temperature=0.3, max_tokens=4000)
 
 
 def run_analisis_cruzado(file_bytes: bytes | None, filename: str,
@@ -1470,7 +1632,7 @@ def run_analisis_cruzado(file_bytes: bytes | None, filename: str,
 {_ATLAS_SOURCE_INSTRUCTIONS}
 
 Datos con trazabilidad de origen:
-{json.dumps(insumos, ensure_ascii=False, default=str)[:4000]}
+{_smart_truncate_insumos(insumos)}
 
 {f"Contexto adicional: {texto}" if texto else ""}
 
@@ -1483,7 +1645,7 @@ Responde en JSON con:
 - "conclusiones": lista de 3-5 conclusiones del analisis cruzado
 - "recomendaciones": acciones basadas en el analisis con prioridad
 """
-    return _llm_analyze(prompt)
+    return _llm_analyze(prompt, temperature=0.2, max_tokens=4000)
 
 
 def run_resumen_equipo(resultados_previos: list[dict] | None = None) -> dict:
@@ -1542,7 +1704,7 @@ Periodo: {contexto}
 {_ATLAS_SOURCE_INSTRUCTIONS}
 
 Datos disponibles por modulo:
-{json.dumps(modules, ensure_ascii=False, default=str)[:4000]}
+{_smart_truncate_insumos(list(modules.values()), _ATLAS_INSUMOS_LIMIT)}
 
 Para CADA modulo que tenga datos, genera un informe individual completo.
 
@@ -1566,7 +1728,7 @@ Responde en JSON con:
 - "resumen_ejecutivo": vision general de todos los modulos
 - "conclusiones": lista de conclusiones clave
 """
-    return _llm_analyze(prompt)
+    return _llm_analyze(prompt, temperature=0.3, max_tokens=4000)
 
 
 def run_informe_consolidado(file_bytes: bytes | None, filename: str,
@@ -1588,7 +1750,7 @@ Periodo: {contexto}
 {_ATLAS_SOURCE_INSTRUCTIONS}
 
 Datos completos del equipo (con trazabilidad):
-{json.dumps(insumos, ensure_ascii=False, default=str)[:4000]}
+{_smart_truncate_insumos(insumos)}
 
 Modulos disponibles: {list(modules.keys())}
 
@@ -1627,7 +1789,7 @@ Este informe debe ser la vision COMPLETA y EJECUTIVA de la operacion. Responde e
 - "forecast": proyeccion para el proximo periodo
 - "nota_metodologica": breve nota sobre las fuentes y limitaciones del analisis
 """
-    return _llm_analyze(prompt)
+    return _llm_analyze(prompt, temperature=0.3, max_tokens=4000)
 
 
 # ══════════════════════════════════════════════════════════════════════
