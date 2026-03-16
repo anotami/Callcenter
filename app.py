@@ -153,32 +153,77 @@ elif st.session_state.selected_agent == "modelos":
         "Ollama (Local)": {
             "url": "http://localhost:11434/v1",
             "api_key": "not-needed",
-            "ayuda": "Instalar: `curl -fsSL https://ollama.ai/install.sh | sh` → luego `ollama pull llama3.2:3b`",
             "necesita_key": False,
+            "modelo_sugerido": "llama3.2:3b",
+            "modelos_ejemplo": ["llama3.2:3b", "llama3.1:8b", "mistral:7b", "qwen2.5:7b"],
+            "pasos": (
+                "**Pasos para configurar Ollama:**\n"
+                "1. Instalar Ollama: `curl -fsSL https://ollama.ai/install.sh | sh`\n"
+                "2. Descargar un modelo: `ollama pull llama3.2:3b`\n"
+                "3. Ollama inicia automaticamente en `http://localhost:11434`\n"
+                "4. Presiona **Guardar** y luego **Detectar Modelos**"
+            ),
         },
         "LM Studio (Local)": {
             "url": "http://localhost:1234/v1",
             "api_key": "not-needed",
-            "ayuda": "Descargar LM Studio, cargar un modelo y activar el servidor local.",
             "necesita_key": False,
+            "modelo_sugerido": "",
+            "modelos_ejemplo": [],
+            "pasos": (
+                "**Pasos para configurar LM Studio:**\n"
+                "1. Descargar LM Studio desde https://lmstudio.ai\n"
+                "2. Buscar y descargar un modelo (ej: Llama 3, Mistral)\n"
+                "3. Ir a la pestana **Local Server** y presionar **Start Server**\n"
+                "4. Presiona **Guardar** y luego **Detectar Modelos**"
+            ),
         },
         "Groq Cloud": {
             "url": "https://api.groq.com/openai/v1",
             "api_key": "",
-            "ayuda": "Obtener API key gratis en: https://console.groq.com/keys",
             "necesita_key": True,
+            "modelo_sugerido": "llama-3.3-70b-versatile",
+            "modelos_ejemplo": [
+                "llama-3.3-70b-versatile", "llama-3.1-8b-instant",
+                "gemma2-9b-it", "mixtral-8x7b-32768",
+            ],
+            "pasos": (
+                "**Pasos para configurar Groq:**\n"
+                "1. Ir a https://console.groq.com y crear cuenta (gratis)\n"
+                "2. Ir a **API Keys** → **Create API Key**\n"
+                "3. Copiar la key (empieza con `gsk_...`)\n"
+                "4. Pegarla en el campo **API Key** abajo\n"
+                "5. Presiona **Guardar** y luego **Detectar Modelos**"
+            ),
         },
         "OpenAI": {
             "url": "https://api.openai.com/v1",
             "api_key": "",
-            "ayuda": "Obtener API key en: https://platform.openai.com/api-keys",
             "necesita_key": True,
+            "modelo_sugerido": "gpt-4o-mini",
+            "modelos_ejemplo": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
+            "pasos": (
+                "**Pasos para configurar OpenAI:**\n"
+                "1. Ir a https://platform.openai.com/api-keys\n"
+                "2. Crear una API Key\n"
+                "3. Copiar la key (empieza con `sk-...`)\n"
+                "4. Pegarla en el campo **API Key** abajo\n"
+                "5. Presiona **Guardar** y luego **Detectar Modelos**\n\n"
+                "*Nota: OpenAI requiere saldo/creditos en la cuenta.*"
+            ),
         },
         "Personalizado": {
             "url": "",
             "api_key": "",
-            "ayuda": "Cualquier servidor compatible con la API de OpenAI.",
             "necesita_key": True,
+            "modelo_sugerido": "",
+            "modelos_ejemplo": [],
+            "pasos": (
+                "**Servidor personalizado compatible con OpenAI API:**\n"
+                "1. Ingresa la URL de tu servidor (ej: `http://mi-servidor:8080/v1`)\n"
+                "2. Ingresa la API Key si tu servidor la requiere\n"
+                "3. Presiona **Guardar** y luego **Detectar Modelos**"
+            ),
         },
     }
 
@@ -207,7 +252,7 @@ elif st.session_state.selected_agent == "modelos":
     st.session_state["_provider"] = provider
     prov_data = PROVEEDORES[provider]
 
-    st.info(prov_data["ayuda"])
+    st.markdown(prov_data["pasos"])
 
     col_url, col_key = st.columns(2)
     with col_url:
@@ -238,14 +283,21 @@ elif st.session_state.selected_agent == "modelos":
                 placeholder="Pega tu API key aqui...",
             )
 
+    # Modelo sugerido segun proveedor
+    modelo_default = _cfg.LLM_MODEL
+    if prov_data["modelo_sugerido"] and detected_provider != provider:
+        modelo_default = prov_data["modelo_sugerido"]
+
     col_model, col_fallback = st.columns(2)
     with col_model:
         new_llm_model = st.text_input(
             "Modelo principal",
-            value=_cfg.LLM_MODEL,
+            value=modelo_default,
             key="_cfg_llm_model",
-            help="Se puede cambiar despues al detectar los modelos disponibles",
+            help="Se actualiza automaticamente al detectar modelos",
         )
+        if prov_data["modelos_ejemplo"]:
+            st.caption(f"Ejemplos: {', '.join(prov_data['modelos_ejemplo'])}")
     with col_fallback:
         new_fallback = st.text_input(
             "Modelos fallback (separados por coma)",
@@ -390,10 +442,19 @@ elif st.session_state.selected_agent == "modelos":
     if info and info["conectado"] and info["modelos"]:
         modelos = info["modelos"]
 
-        st.markdown("**Modelos disponibles en el servidor:**")
+        # Si el modelo actual no existe en el servidor, auto-seleccionar el primero
         current = st.session_state.selected_model
-        idx = modelos.index(current) if current in modelos else 0
+        if current not in modelos:
+            first = modelos[0]
+            st.session_state.selected_model = first
+            _cfg.LLM_MODEL = first
+            save_env_config({"LLM_MODEL": first})
+            st.warning(f"El modelo `{current}` no existe en el servidor. Se selecciono **{first}** automaticamente.")
+            current = first
 
+        idx = modelos.index(current)
+
+        st.markdown("**Modelos disponibles en el servidor:**")
         chosen = st.radio(
             "Selecciona el modelo que usaran los agentes:",
             modelos,
