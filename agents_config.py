@@ -154,9 +154,9 @@ AGENTS = {
         "habilidades": [
             {
                 "id": "ingesta_wfm",
-                "nombre": "Ingesta Base WFM",
+                "nombre": "Ingesta Metricas x Antiguedad",
                 "descripcion": (
-                    "Carga y procesa la base de datos maestra de WFM con metricas por agente y periodo. "
+                    "Carga y procesa la base 'Metricas x Antiguedad' con metricas por agente y periodo. "
                     "Reconoce 60+ columnas: PERIODO, PROVEEDOR, PLATAFORMA, AGENTE, ANTIGUEDAD, "
                     "ATENDIDAS, REITERADAS, TRANSFERENCIAS, TMO, LLAMADAS_CORTAS, AVAIL, NO_READY, "
                     "OCUPACION, HOLD, ENCUESTAS, NPS, CALIDAD, SOLUCION, ERROR_ENVIO_A_CAMPO, "
@@ -164,8 +164,8 @@ AGENTS = {
                     "FECHA_ULTIMA_CONEXION, entre otras. Valida datos, calcula KPIs agregados "
                     "y genera un perfil completo de la operacion."
                 ),
-                "datos_necesarios": ["Archivo base WFM (.csv, .xlsx)"],
-                "resultado": "Resumen completo de la base WFM con KPIs por dimension, cuartiles y alertas",
+                "datos_necesarios": ["Archivo Metricas x Antiguedad (.csv, .xlsx)"],
+                "resultado": "Resumen completo de Metricas x Antiguedad con KPIs por dimension, cuartiles y alertas",
                 "acepta_archivo": True,
                 "extensiones": [".csv", ".xlsx", ".xls"],
                 "acepta_texto": True,
