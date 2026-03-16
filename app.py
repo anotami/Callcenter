@@ -254,68 +254,79 @@ elif st.session_state.selected_agent == "modelos":
             help="Modelos alternativos si el principal no responde",
         )
 
-    # Groq como fallback cloud adicional
-    with st.expander("Groq Cloud como fallback adicional (opcional)"):
-        col_g1, col_g2 = st.columns(2)
-        with col_g1:
-            new_groq_key = st.text_input(
-                "Groq API Key",
-                value=_cfg.GROQ_API_KEY,
-                type="password",
-                key="_cfg_groq_key",
-                help="Si usas Ollama/LM Studio local, Groq puede ser tu fallback en la nube",
-            )
-        with col_g2:
-            st.text_input("Groq URL", value=_cfg.GROQ_BASE_URL, disabled=True, key="_cfg_groq_url")
-
-    # ══════════════════════════════════════════════════════════════════
-    #  SECCION 2: Otros servicios
-    # ══════════════════════════════════════════════════════════════════
-    with st.expander("Whisper (Transcripcion de Audio)"):
-        col_w1, col_w2, col_w3 = st.columns(3)
-        with col_w1:
-            whisper_opts = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
-            new_whisper_model = st.selectbox(
-                "Modelo Whisper",
-                whisper_opts,
-                index=whisper_opts.index(_cfg.WHISPER_MODEL) if _cfg.WHISPER_MODEL in whisper_opts else 5,
-                key="_cfg_whisper_model",
-            )
-        with col_w2:
-            new_whisper_device = st.selectbox(
-                "Dispositivo",
-                ["cuda", "cpu"],
-                index=0 if _cfg.WHISPER_DEVICE == "cuda" else 1,
-                key="_cfg_whisper_device",
-            )
-        with col_w3:
-            new_whisper_lang = st.text_input(
-                "Idioma",
-                value=_cfg.WHISPER_LANGUAGE,
-                key="_cfg_whisper_lang",
-            )
-
-    with st.expander("HuggingFace Token (Diarizacion)"):
-        new_hf_token = st.text_input(
-            "Token",
-            value=_cfg.HF_TOKEN,
+    # ── Groq Cloud como fallback adicional ────────────────────────────
+    st.markdown("---")
+    st.markdown("### Groq Cloud (Fallback opcional)")
+    st.caption("Si usas un servidor local, Groq puede ser tu respaldo en la nube cuando no responda.")
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        new_groq_key = st.text_input(
+            "Groq API Key",
+            value=_cfg.GROQ_API_KEY,
             type="password",
-            key="_cfg_hf_token",
-            help="Necesario para pyannote. Obtener en https://huggingface.co/settings/tokens",
+            key="_cfg_groq_key",
+            help="Obtener gratis en https://console.groq.com/keys — dejar vacio para desactivar",
+        )
+    with col_g2:
+        st.text_input("Groq URL", value=_cfg.GROQ_BASE_URL, disabled=True, key="_cfg_groq_url")
+
+    # ── Whisper ────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Whisper (Transcripcion de Audio)")
+    st.caption("Motor de transcripcion de audio a texto. Modelos mas grandes = mejor calidad pero mas lento.")
+    col_w1, col_w2, col_w3 = st.columns(3)
+    with col_w1:
+        whisper_opts = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+        new_whisper_model = st.selectbox(
+            "Modelo Whisper",
+            whisper_opts,
+            index=whisper_opts.index(_cfg.WHISPER_MODEL) if _cfg.WHISPER_MODEL in whisper_opts else 5,
+            key="_cfg_whisper_model",
+        )
+    with col_w2:
+        new_whisper_device = st.selectbox(
+            "Dispositivo",
+            ["cuda", "cpu"],
+            index=0 if _cfg.WHISPER_DEVICE == "cuda" else 1,
+            key="_cfg_whisper_device",
+            help="cuda = GPU (rapido) | cpu = procesador (lento)",
+        )
+    with col_w3:
+        new_whisper_lang = st.text_input(
+            "Idioma",
+            value=_cfg.WHISPER_LANGUAGE,
+            key="_cfg_whisper_lang",
+            help="Codigo ISO: es (espanol), en (ingles), pt (portugues), etc.",
         )
 
-    with st.expander("Base de Datos (SQL Server)"):
-        col_s1, col_s2 = st.columns(2)
-        with col_s1:
-            new_sql_server = st.text_input("Servidor", value=_cfg.SQL_SERVER, key="_cfg_sql_server")
-            new_sql_db = st.text_input("Base de datos", value=_cfg.SQL_DATABASE, key="_cfg_sql_db")
-            new_sql_driver = st.text_input("Driver ODBC", value=_cfg.SQL_DRIVER, key="_cfg_sql_driver")
-        with col_s2:
-            new_sql_user = st.text_input("Usuario", value=_cfg.SQL_USERNAME, key="_cfg_sql_user")
-            new_sql_pass = st.text_input("Password", value=_cfg.SQL_PASSWORD, key="_cfg_sql_pass", type="password")
+    # ── HuggingFace ────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### HuggingFace (Diarizacion de Hablantes)")
+    st.caption("Token necesario para pyannote (identificar quien habla en cada segmento del audio).")
+    new_hf_token = st.text_input(
+        "HuggingFace Token",
+        value=_cfg.HF_TOKEN,
+        type="password",
+        key="_cfg_hf_token",
+        help="Obtener en https://huggingface.co/settings/tokens — Aceptar licencia en https://huggingface.co/pyannote/speaker-diarization-3.1",
+    )
+
+    # ── SQL Server ─────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Base de Datos (SQL Server)")
+    st.caption("Conexion opcional para almacenar resultados en base de datos.")
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        new_sql_server = st.text_input("Servidor", value=_cfg.SQL_SERVER, key="_cfg_sql_server")
+        new_sql_db = st.text_input("Base de datos", value=_cfg.SQL_DATABASE, key="_cfg_sql_db")
+        new_sql_driver = st.text_input("Driver ODBC", value=_cfg.SQL_DRIVER, key="_cfg_sql_driver")
+    with col_s2:
+        new_sql_user = st.text_input("Usuario", value=_cfg.SQL_USERNAME, key="_cfg_sql_user")
+        new_sql_pass = st.text_input("Password", value=_cfg.SQL_PASSWORD, key="_cfg_sql_pass", type="password")
 
     # ── Boton Guardar ─────────────────────────────────────────────────
-    if st.button("Guardar Configuracion", use_container_width=True, type="primary",
+    st.markdown("---")
+    if st.button("Guardar toda la Configuracion", use_container_width=True, type="primary",
                   icon=":material/save:"):
         # Usar URL del proveedor si no es personalizado
         save_url = prov_data["url"] if prov_data["url"] else new_base_url
