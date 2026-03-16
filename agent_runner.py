@@ -529,6 +529,115 @@ def run_ingesta_acd(file_bytes: bytes, filename: str) -> dict:
     return summary
 
 
+def run_ingesta_cubo_trafico(file_bytes: bytes, filename: str, texto: str = "") -> dict:
+    """Ingesta del Cubo de Trafico historico desde INTEGRATEL."""
+    df = _load_dataframe(file_bytes, filename)
+    summary = _df_summary(df, "Cubo de Trafico")
+
+    keywords_map = {
+        "fecha": ["fecha", "date", "dia", "day"],
+        "intervalo": ["intervalo", "interval", "franja", "media_hora", "half_hour", "time_slot"],
+        "skill_cola": ["skill", "cola", "queue", "grupo", "campaign", "linea"],
+        "llamadas_recibidas": ["recibidas", "offered", "received", "entrantes", "inbound", "total_calls", "volumen"],
+        "llamadas_atendidas": ["atendidas", "answered", "handled", "contestadas"],
+        "llamadas_abandonadas": ["abandonadas", "abandoned", "lost", "perdidas"],
+        "tmo": ["tmo", "aht", "handle_time", "tiempo_medio", "avg_handle"],
+        "asa": ["asa", "speed_answer", "avg_wait", "espera_promedio"],
+        "nivel_servicio": ["nivel_servicio", "service_level", "nds", "sl_pct"],
+    }
+    summary["kpis_detectados"] = _detect_kpis(df, keywords_map)
+    summary["tipo_ingesta"] = "cubo_trafico"
+
+    # Detectar rango de fechas
+    for col in df.columns:
+        cl = col.lower().strip()
+        if cl in ("fecha", "date", "dia"):
+            try:
+                fechas = pd.to_datetime(df[col], errors="coerce").dropna()
+                if not fechas.empty:
+                    summary["rango_fechas"] = {
+                        "desde": str(fechas.min().date()),
+                        "hasta": str(fechas.max().date()),
+                        "dias": int((fechas.max() - fechas.min()).days) + 1,
+                    }
+            except Exception:
+                pass
+            break
+
+    # Detectar intervalos unicos
+    for col in df.columns:
+        cl = col.lower().strip()
+        if cl in ("intervalo", "interval", "franja", "media_hora", "half_hour"):
+            n_int = df[col].nunique()
+            summary["intervalos_unicos"] = n_int
+            break
+
+    if texto:
+        summary["contexto_usuario"] = texto
+
+    return summary
+
+
+def run_ingesta_malla(file_bytes: bytes, filename: str, texto: str = "") -> dict:
+    """Ingesta de la Malla de Proveedor desde Kipu."""
+    df = _load_dataframe(file_bytes, filename)
+    summary = _df_summary(df, "Malla Proveedor")
+
+    keywords_map = {
+        "fecha": ["fecha", "date", "dia"],
+        "intervalo": ["intervalo", "interval", "franja", "media_hora"],
+        "proveedor": ["proveedor", "provider", "outsourcer", "vendor", "bpo"],
+        "planificado": ["planificado", "planned", "plan", "requerido_plan"],
+        "disponible": ["disponible", "available", "avail_plan"],
+        "pronostico": ["pronostico", "forecast", "volumen_forecast", "llamadas_pronostico"],
+        "tmo_plan": ["tmo", "aht", "tmo_plan", "tmo_pronostico"],
+        "nivel_intervalo": ["nivel_intervalo", "nivel_servicio", "nds", "service_level"],
+    }
+    summary["kpis_detectados"] = _detect_kpis(df, keywords_map)
+    summary["tipo_ingesta"] = "malla_proveedor"
+
+    # Detectar proveedores
+    for col in df.columns:
+        cl = col.lower().strip()
+        if cl in ("proveedor", "provider", "outsourcer", "vendor", "bpo"):
+            proveedores = df[col].dropna().unique().tolist()
+            summary["proveedores"] = [str(p) for p in proveedores[:20]]
+            summary["total_proveedores"] = len(proveedores)
+            break
+
+    if texto:
+        summary["contexto_usuario"] = texto
+
+    return summary
+
+
+def run_ingesta_gtr(file_bytes: bytes, filename: str, texto: str = "") -> dict:
+    """Ingesta de datos GTR (Gestion en Tiempo Real)."""
+    df = _load_dataframe(file_bytes, filename)
+    summary = _df_summary(df, "GTR Datos Reales")
+
+    keywords_map = {
+        "fecha": ["fecha", "date", "dia"],
+        "intervalo": ["intervalo", "interval", "franja"],
+        "logueados_real": ["logueado", "logged", "login", "conectados", "logueados_real", "rac_logueado"],
+        "disponibles_real": ["disponible", "available", "avail", "disponibles_real", "rac_disponible"],
+        "aux_break": ["break", "descanso", "pausa", "aux_break"],
+        "aux_coaching": ["coaching", "coach", "aux_coaching"],
+        "aux_capacitacion": ["capacitacion", "training", "formacion", "aux_capacitacion"],
+        "atendidas_real": ["atendidas", "answered", "handled", "atendidas_real"],
+        "llamadas_real": ["llamadas", "calls", "volumen_real", "recibidas_real"],
+        "tmo_real": ["tmo", "aht", "tmo_real", "handle_time_real"],
+        "avail_tiempo": ["avail_seg", "avail_time", "tiempo_avail", "available_time"],
+    }
+    summary["kpis_detectados"] = _detect_kpis(df, keywords_map)
+    summary["tipo_ingesta"] = "gtr_datos_reales"
+
+    if texto:
+        summary["contexto_usuario"] = texto
+
+    return summary
+
+
 def run_ingesta_qa(file_bytes: bytes, filename: str) -> dict:
     df = _load_dataframe(file_bytes, filename)
     summary = _df_summary(df, "QA")
@@ -1203,6 +1312,622 @@ Texto: {texto}"""
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  NEXUS - Runners WFM Ciclo Completo (OUTPUTs I-VI)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _erlang_c_calc(llamadas: float, tmo: float, nds_target: float = 0.8,
+                   t_respuesta: float = 20) -> dict:
+    """Calculo Erlang C reutilizable. Retorna agentes_req, nds, erlangs, ocupacion."""
+    import math
+    intensidad = llamadas * (tmo / 3600)
+    agentes_base = max(math.ceil(intensidad), 1)
+    mejor_nds = 0
+    agentes_req = agentes_base
+    for n in range(agentes_base, agentes_base + 100):
+        if n <= intensidad:
+            continue
+        rho = intensidad / n
+        pw = (intensidad ** n / math.factorial(min(n, 170))) / (
+            (intensidad ** n / math.factorial(min(n, 170))) +
+            (1 - rho) * sum(intensidad ** k / math.factorial(k) for k in range(n))
+        )
+        nds = 1 - pw * math.exp(-(n - intensidad) * (t_respuesta / tmo))
+        if nds >= nds_target:
+            agentes_req = n
+            mejor_nds = round(nds * 100, 1)
+            break
+        mejor_nds = round(nds * 100, 1)
+    ocupacion = round((intensidad / agentes_req) * 100, 1) if agentes_req > 0 else 0
+    return {
+        "erlangs": round(intensidad, 2),
+        "agentes_req": agentes_req,
+        "nivel_servicio": mejor_nds,
+        "ocupacion_pct": ocupacion,
+    }
+
+
+def run_pronostico_erlang(file_bytes: bytes | None, filename: str,
+                          texto: str = "",
+                          resultados_previos: list[dict] | None = None) -> dict:
+    """OUTPUT I: Rac Requerido Disponible - Erlang C con cubo de trafico/pronostico."""
+    import math
+
+    intervalos = []
+
+    # Intentar cargar datos de archivo
+    if file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+        cols_lower = {c.lower(): c for c in df.columns}
+        # Buscar columnas de volumen y TMO
+        vol_col = tmo_col = intervalo_col = None
+        for kw in ["llamadas", "calls", "volumen", "offered", "forecast", "pronostico"]:
+            for cl, co in cols_lower.items():
+                if kw in cl and df[co].dtype in ["float64", "int64"]:
+                    vol_col = co
+                    break
+            if vol_col:
+                break
+        for kw in ["tmo", "aht", "duracion"]:
+            for cl, co in cols_lower.items():
+                if kw in cl and df[co].dtype in ["float64", "int64"]:
+                    tmo_col = co
+                    break
+            if tmo_col:
+                break
+        for kw in ["intervalo", "interval", "hora", "time", "periodo"]:
+            for cl, co in cols_lower.items():
+                if kw in cl:
+                    intervalo_col = co
+                    break
+            if intervalo_col:
+                break
+
+        if vol_col:
+            for _, row in df.iterrows():
+                llamadas = float(row[vol_col]) if pd.notna(row[vol_col]) else 0
+                tmo_val = float(row[tmo_col]) if tmo_col and pd.notna(row[tmo_col]) else 360
+                intervalo = str(row[intervalo_col]) if intervalo_col and pd.notna(row[intervalo_col]) else "N/A"
+                if llamadas > 0:
+                    ec = _erlang_c_calc(llamadas, tmo_val)
+                    intervalos.append({
+                        "intervalo": intervalo,
+                        "llamadas_forecast": round(llamadas, 1),
+                        "tmo_forecast": round(tmo_val, 1),
+                        "rac_requerido_disponible": ec["agentes_req"],
+                        "erlangs": ec["erlangs"],
+                        "nds_proyectado": ec["nivel_servicio"],
+                        "ocupacion_pct": ec["ocupacion_pct"],
+                    })
+
+    # Complementar con resultados previos (ej. cubo de trafico de CORTEX)
+    if not intervalos and resultados_previos:
+        for r in resultados_previos:
+            data = r.get("resultado", {})
+            if isinstance(data, dict):
+                if "total_llamadas" in data:
+                    llamadas = data.get("total_llamadas", 100)
+                    filas = data.get("filas", 1)
+                    llamadas_h = round(llamadas / max(filas, 1), 1)
+                    tmo_val = 360
+                    if "tiempos_detectados" in data:
+                        tmo_val = data["tiempos_detectados"].get("tmo", {}).get("promedio", 360)
+                    ec = _erlang_c_calc(llamadas_h, tmo_val)
+                    intervalos.append({
+                        "intervalo": "Promedio global",
+                        "llamadas_forecast": llamadas_h,
+                        "tmo_forecast": tmo_val,
+                        "rac_requerido_disponible": ec["agentes_req"],
+                        "erlangs": ec["erlangs"],
+                        "nds_proyectado": ec["nivel_servicio"],
+                        "ocupacion_pct": ec["ocupacion_pct"],
+                    })
+
+    # Parametros manuales via texto
+    if not intervalos and texto:
+        params = {}
+        try:
+            params = json.loads(texto)
+        except json.JSONDecodeError:
+            prompt = f"""Extrae parametros de pronostico WFM del texto. Responde JSON con:
+- "llamadas_por_hora": numero
+- "tmo_segundos": numero
+Texto: {texto}"""
+            params = _llm_analyze(prompt)
+        llamadas = params.get("llamadas_por_hora", 100)
+        tmo_val = params.get("tmo_segundos", 360)
+        ec = _erlang_c_calc(llamadas, tmo_val)
+        intervalos.append({
+            "intervalo": "Manual",
+            "llamadas_forecast": llamadas,
+            "tmo_forecast": tmo_val,
+            "rac_requerido_disponible": ec["agentes_req"],
+            "erlangs": ec["erlangs"],
+            "nds_proyectado": ec["nivel_servicio"],
+            "ocupacion_pct": ec["ocupacion_pct"],
+        })
+
+    if not intervalos:
+        return {"error": "Se requiere cubo de trafico, datos de forecast o parametros manuales"}
+
+    total_rac = sum(i["rac_requerido_disponible"] for i in intervalos)
+    return {
+        "tipo_analisis": "pronostico_erlang",
+        "output": "OUTPUT_I",
+        "descripcion": "Rac Requerido Disponible (Erlang C con pronostico)",
+        "intervalos": intervalos,
+        "resumen": {
+            "total_intervalos": len(intervalos),
+            "rac_requerido_total": total_rac,
+            "rac_requerido_promedio": round(total_rac / len(intervalos), 1),
+            "nds_promedio": round(sum(i["nds_proyectado"] for i in intervalos) / len(intervalos), 1),
+        },
+    }
+
+
+def run_planificacion_proveedor(file_bytes: bytes | None, filename: str,
+                                texto: str = "",
+                                resultados_previos: list[dict] | None = None) -> dict:
+    """OUTPUT II: Rac Planificado Disponible - Erlang + 10% volumen + reductores."""
+    import math
+
+    # Parametros de reductores por defecto
+    params = {"volumen_extra_pct": 10, "shrinkage_pct": 30, "ausentismo_pct": 5,
+              "rotacion_pct": 3, "capacitacion_pct": 2}
+    if texto:
+        try:
+            user_params = json.loads(texto)
+            params.update(user_params)
+        except json.JSONDecodeError:
+            pass
+
+    intervalos_base = []
+
+    # Usar OUTPUT I previo
+    if resultados_previos:
+        for r in resultados_previos:
+            data = r.get("resultado", {})
+            if isinstance(data, dict) and data.get("output") == "OUTPUT_I":
+                intervalos_base = data.get("intervalos", [])
+                break
+            # Tambien aceptar cubo de trafico
+            if isinstance(data, dict) and "total_llamadas" in data:
+                llamadas_h = data["total_llamadas"] / max(data.get("filas", 1), 1)
+                tmo_val = 360
+                if "tiempos_detectados" in data:
+                    tmo_val = data["tiempos_detectados"].get("tmo", {}).get("promedio", 360)
+                ec = _erlang_c_calc(llamadas_h, tmo_val)
+                intervalos_base.append({
+                    "intervalo": "Promedio",
+                    "llamadas_forecast": llamadas_h,
+                    "tmo_forecast": tmo_val,
+                    "rac_requerido_disponible": ec["agentes_req"],
+                })
+
+    # Archivo directo
+    if not intervalos_base and file_bytes:
+        pronostico = run_pronostico_erlang(file_bytes, filename, "", None)
+        if "intervalos" in pronostico:
+            intervalos_base = pronostico["intervalos"]
+
+    if not intervalos_base:
+        return {"error": "Se requiere OUTPUT I (pronostico) o cubo de trafico como insumo"}
+
+    vol_extra = params["volumen_extra_pct"] / 100
+    shrinkage = params["shrinkage_pct"] / 100
+    ausentismo = params["ausentismo_pct"] / 100
+    rotacion = params["rotacion_pct"] / 100
+    capacitacion = params["capacitacion_pct"] / 100
+    reductor_total = shrinkage + ausentismo + rotacion + capacitacion
+
+    intervalos_plan = []
+    for base in intervalos_base:
+        llamadas_plan = base["llamadas_forecast"] * (1 + vol_extra)
+        tmo_plan = base.get("tmo_forecast", 360)
+        ec = _erlang_c_calc(llamadas_plan, tmo_plan)
+        rac_con_reductores = math.ceil(ec["agentes_req"] / (1 - reductor_total))
+        intervalos_plan.append({
+            "intervalo": base["intervalo"],
+            "llamadas_plan": round(llamadas_plan, 1),
+            "tmo_plan": round(tmo_plan, 1),
+            "rac_requerido_base": ec["agentes_req"],
+            "rac_planificado_disponible": rac_con_reductores,
+            "reductores_aplicados_pct": round(reductor_total * 100, 1),
+            "nds_proyectado": ec["nivel_servicio"],
+        })
+
+    total_plan = sum(i["rac_planificado_disponible"] for i in intervalos_plan)
+    return {
+        "tipo_analisis": "planificacion_proveedor",
+        "output": "OUTPUT_II",
+        "descripcion": "Rac Planificado Disponible (Erlang + 10% + reductores)",
+        "parametros_reductores": params,
+        "intervalos": intervalos_plan,
+        "resumen": {
+            "total_intervalos": len(intervalos_plan),
+            "rac_planificado_total": total_plan,
+            "rac_planificado_promedio": round(total_plan / len(intervalos_plan), 1),
+        },
+    }
+
+
+def run_programacion_turnos(file_bytes: bytes | None, filename: str,
+                            texto: str = "",
+                            resultados_previos: list[dict] | None = None) -> dict:
+    """OUTPUTs III/IV/V: Programado Logueado, -Break, Disponible."""
+    import math
+
+    # Parametros TNP por defecto (minutos por turno de 8h)
+    params = {"break_min": 45, "coach_min": 15, "capacitacion_min": 10,
+              "dotacion_real": None}
+    if texto:
+        try:
+            user_params = json.loads(texto)
+            params.update(user_params)
+        except json.JSONDecodeError:
+            pass
+
+    intervalos_plan = []
+
+    # Usar OUTPUT II previo o archivo de malla
+    if resultados_previos:
+        for r in resultados_previos:
+            data = r.get("resultado", {})
+            if isinstance(data, dict) and data.get("output") == "OUTPUT_II":
+                intervalos_plan = data.get("intervalos", [])
+                break
+
+    if not intervalos_plan and file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+        cols_lower = {c.lower(): c for c in df.columns}
+        plan_col = intervalo_col = None
+        for kw in ["planificado", "programado", "dotacion", "agentes", "headcount"]:
+            for cl, co in cols_lower.items():
+                if kw in cl and df[co].dtype in ["float64", "int64"]:
+                    plan_col = co
+                    break
+            if plan_col:
+                break
+        for kw in ["intervalo", "interval", "hora", "time"]:
+            for cl, co in cols_lower.items():
+                if kw in cl:
+                    intervalo_col = co
+                    break
+            if intervalo_col:
+                break
+
+        if plan_col:
+            for _, row in df.iterrows():
+                agentes = int(row[plan_col]) if pd.notna(row[plan_col]) else 0
+                intervalo = str(row[intervalo_col]) if intervalo_col and pd.notna(row[intervalo_col]) else "N/A"
+                intervalos_plan.append({
+                    "intervalo": intervalo,
+                    "rac_planificado_disponible": agentes,
+                })
+
+    if not intervalos_plan:
+        return {"error": "Se requiere OUTPUT II (planificacion) o malla de turnos"}
+
+    tnp_total_min = params["break_min"] + params["coach_min"] + params["capacitacion_min"]
+    # Factor TNP: proporcion del turno dedicada a TNPs (base 480 min = 8h)
+    factor_tnp = tnp_total_min / 480
+
+    intervalos_prog = []
+    for plan in intervalos_plan:
+        rac_plan = plan.get("rac_planificado_disponible", plan.get("rac_requerido_base", 0))
+        dotacion = params["dotacion_real"] if params["dotacion_real"] else rac_plan
+
+        # OUTPUT III: Rac Programado Logueado (agentes citados en horario)
+        output_iii = dotacion
+        # OUTPUT IV: Programado Logueado - Break Programado
+        breaks_simultaneos = max(1, math.ceil(dotacion * (params["break_min"] / 480)))
+        output_iv = dotacion - breaks_simultaneos
+        # OUTPUT V: Rac Programado Disponible (sin ningún TNP)
+        tnp_simultaneos = max(1, math.ceil(dotacion * factor_tnp))
+        output_v = dotacion - tnp_simultaneos
+
+        intervalos_prog.append({
+            "intervalo": plan.get("intervalo", "N/A"),
+            "rac_planificado": rac_plan,
+            "output_iii_programado_logueado": output_iii,
+            "output_iv_logueado_menos_break": output_iv,
+            "output_v_programado_disponible": output_v,
+            "breaks_simultaneos": breaks_simultaneos,
+            "tnp_simultaneos": tnp_simultaneos,
+        })
+
+    return {
+        "tipo_analisis": "programacion_turnos",
+        "output": "OUTPUT_III_IV_V",
+        "descripcion": "Rac Programado Logueado (III), -Break (IV), Disponible (V)",
+        "parametros_tnp": {
+            "break_min": params["break_min"],
+            "coach_min": params["coach_min"],
+            "capacitacion_min": params["capacitacion_min"],
+            "tnp_total_min": tnp_total_min,
+            "factor_tnp": round(factor_tnp, 3),
+        },
+        "intervalos": intervalos_prog,
+        "resumen": {
+            "total_intervalos": len(intervalos_prog),
+            "promedio_logueado": round(sum(i["output_iii_programado_logueado"] for i in intervalos_prog) / len(intervalos_prog), 1),
+            "promedio_disponible": round(sum(i["output_v_programado_disponible"] for i in intervalos_prog) / len(intervalos_prog), 1),
+        },
+    }
+
+
+def run_analisis_gtr(file_bytes: bytes | None, filename: str,
+                     texto: str = "",
+                     resultados_previos: list[dict] | None = None) -> dict:
+    """Analisis GTR: Real vs Planificado con desviaciones."""
+
+    datos_gtr = []
+    datos_plan = []
+
+    # Cargar datos GTR de archivo
+    if file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+        cols_lower = {c.lower(): c for c in df.columns}
+
+        log_real_col = disp_real_col = atend_col = tmo_real_col = intervalo_col = None
+        for kw in ["logueado", "logged", "login"]:
+            for cl, co in cols_lower.items():
+                if kw in cl and "real" in cl and df[co].dtype in ["float64", "int64"]:
+                    log_real_col = co
+                    break
+            if log_real_col:
+                break
+        for kw in ["disponible", "available", "avail"]:
+            for cl, co in cols_lower.items():
+                if kw in cl and "real" in cl and df[co].dtype in ["float64", "int64"]:
+                    disp_real_col = co
+                    break
+            if disp_real_col:
+                break
+        for kw in ["atendidas", "answered", "handled"]:
+            for cl, co in cols_lower.items():
+                if kw in cl and df[co].dtype in ["float64", "int64"]:
+                    atend_col = co
+                    break
+            if atend_col:
+                break
+        for kw in ["tmo", "aht"]:
+            for cl, co in cols_lower.items():
+                if kw in cl and "real" in cl and df[co].dtype in ["float64", "int64"]:
+                    tmo_real_col = co
+                    break
+            if tmo_real_col:
+                break
+        for kw in ["intervalo", "interval", "hora", "time"]:
+            for cl, co in cols_lower.items():
+                if kw in cl:
+                    intervalo_col = co
+                    break
+            if intervalo_col:
+                break
+
+        if log_real_col or disp_real_col or atend_col:
+            for _, row in df.iterrows():
+                intervalo = str(row[intervalo_col]) if intervalo_col and pd.notna(row[intervalo_col]) else "N/A"
+                gtr_row = {"intervalo": intervalo}
+                if log_real_col and pd.notna(row[log_real_col]):
+                    gtr_row["logueados_real"] = int(row[log_real_col])
+                if disp_real_col and pd.notna(row[disp_real_col]):
+                    gtr_row["disponibles_real"] = int(row[disp_real_col])
+                if atend_col and pd.notna(row[atend_col]):
+                    gtr_row["atendidas_real"] = int(row[atend_col])
+                if tmo_real_col and pd.notna(row[tmo_real_col]):
+                    gtr_row["tmo_real"] = float(row[tmo_real_col])
+                datos_gtr.append(gtr_row)
+
+    # Cargar datos de resultados previos (GTR de CORTEX y programacion de NEXUS)
+    if resultados_previos:
+        for r in resultados_previos:
+            data = r.get("resultado", {})
+            if isinstance(data, dict):
+                if data.get("output") in ("OUTPUT_III_IV_V",):
+                    datos_plan = data.get("intervalos", [])
+                elif data.get("tipo_analisis") == "ingesta_gtr":
+                    # Datos GTR de CORTEX
+                    if "muestra" in data:
+                        for row in data["muestra"][:50]:
+                            gtr_row = {"intervalo": str(row.get("intervalo", "N/A"))}
+                            for k in ["logueados_real", "disponibles_real", "atendidas_real", "tmo_real"]:
+                                if k in row:
+                                    gtr_row[k] = row[k]
+                            datos_gtr.append(gtr_row)
+
+    if not datos_gtr:
+        return {"error": "Se requieren datos GTR reales (archivo o resultado de CORTEX)"}
+
+    # Comparar real vs plan
+    comparativo = []
+    for i, gtr in enumerate(datos_gtr):
+        comp = {"intervalo": gtr["intervalo"]}
+        comp["logueados_real"] = gtr.get("logueados_real", 0)
+        comp["disponibles_real"] = gtr.get("disponibles_real", 0)
+        comp["atendidas_real"] = gtr.get("atendidas_real", 0)
+        comp["tmo_real"] = gtr.get("tmo_real", 0)
+
+        # Si hay plan correspondiente
+        if i < len(datos_plan):
+            plan = datos_plan[i]
+            comp["logueados_plan"] = plan.get("output_iii_programado_logueado", 0)
+            comp["disponibles_plan"] = plan.get("output_v_programado_disponible", 0)
+            if comp["logueados_plan"] > 0:
+                comp["desviacion_logueados_pct"] = round(
+                    ((comp["logueados_real"] - comp["logueados_plan"]) / comp["logueados_plan"]) * 100, 1)
+            if comp["disponibles_plan"] > 0:
+                comp["desviacion_disponibles_pct"] = round(
+                    ((comp["disponibles_real"] - comp["disponibles_plan"]) / comp["disponibles_plan"]) * 100, 1)
+
+        # Erlang con datos reales
+        if comp["atendidas_real"] > 0 and comp["tmo_real"] > 0:
+            ec_real = _erlang_c_calc(comp["atendidas_real"], comp["tmo_real"])
+            comp["rac_requerido_real"] = ec_real["agentes_req"]
+
+        # Alertas
+        alertas = []
+        if comp.get("desviacion_logueados_pct", 0) < -10:
+            alertas.append("DEFICIT: logueados reales muy por debajo del plan")
+        if comp.get("desviacion_disponibles_pct", 0) < -15:
+            alertas.append("CRITICO: disponibles reales muy por debajo del plan")
+        comp["alertas"] = alertas
+
+        comparativo.append(comp)
+
+    alertas_totales = sum(len(c["alertas"]) for c in comparativo)
+    return {
+        "tipo_analisis": "analisis_gtr",
+        "descripcion": "Comparativo GTR Real vs Programacion Planificada",
+        "comparativo": comparativo,
+        "resumen": {
+            "total_intervalos": len(comparativo),
+            "total_alertas": alertas_totales,
+            "promedio_logueados_real": round(sum(c["logueados_real"] for c in comparativo) / len(comparativo), 1),
+            "promedio_disponibles_real": round(sum(c["disponibles_real"] for c in comparativo) / len(comparativo), 1),
+        },
+    }
+
+
+def run_calcular_cop_cor(file_bytes: bytes | None, filename: str,
+                         texto: str = "",
+                         resultados_previos: list[dict] | None = None) -> dict:
+    """OUTPUT VI: COP (Capacidad Operativa Planificada) y COR (Capacidad Operativa Real)."""
+
+    intervalos_plan = []
+    intervalos_gtr = []
+
+    # Recolectar datos de resultados previos
+    if resultados_previos:
+        for r in resultados_previos:
+            data = r.get("resultado", {})
+            if isinstance(data, dict):
+                if data.get("output") == "OUTPUT_I":
+                    intervalos_plan = data.get("intervalos", [])
+                elif data.get("output") == "OUTPUT_II":
+                    intervalos_plan = data.get("intervalos", [])
+                elif data.get("tipo_analisis") == "analisis_gtr":
+                    intervalos_gtr = data.get("comparativo", [])
+                elif data.get("tipo_analisis") == "ingesta_gtr":
+                    if "muestra" in data:
+                        for row in data["muestra"][:50]:
+                            intervalos_gtr.append({
+                                "atendidas_real": row.get("atendidas_real", 0),
+                                "tmo_real": row.get("tmo_real", 0),
+                                "intervalo": str(row.get("intervalo", "N/A")),
+                            })
+
+    # Archivo directo con datos reales
+    if not intervalos_gtr and file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+        cols_lower = {c.lower(): c for c in df.columns}
+        atend_col = tmo_col = avail_col = intervalo_col = None
+        for kw in ["atendidas", "answered", "handled"]:
+            for cl, co in cols_lower.items():
+                if kw in cl and df[co].dtype in ["float64", "int64"]:
+                    atend_col = co
+                    break
+            if atend_col:
+                break
+        for kw in ["tmo", "aht"]:
+            for cl, co in cols_lower.items():
+                if kw in cl and df[co].dtype in ["float64", "int64"]:
+                    tmo_col = co
+                    break
+            if tmo_col:
+                break
+        for kw in ["avail", "disponib"]:
+            for cl, co in cols_lower.items():
+                if kw in cl and df[co].dtype in ["float64", "int64"]:
+                    avail_col = co
+                    break
+            if avail_col:
+                break
+        for kw in ["intervalo", "interval", "hora", "time"]:
+            for cl, co in cols_lower.items():
+                if kw in cl:
+                    intervalo_col = co
+                    break
+            if intervalo_col:
+                break
+
+        if atend_col:
+            for _, row in df.iterrows():
+                intervalo = str(row[intervalo_col]) if intervalo_col and pd.notna(row[intervalo_col]) else "N/A"
+                gtr_row = {"intervalo": intervalo, "atendidas_real": 0, "tmo_real": 0}
+                if pd.notna(row[atend_col]):
+                    gtr_row["atendidas_real"] = float(row[atend_col])
+                if tmo_col and pd.notna(row[tmo_col]):
+                    gtr_row["tmo_real"] = float(row[tmo_col])
+                if avail_col and pd.notna(row[avail_col]):
+                    gtr_row["avail_tiempo"] = float(row[avail_col])
+                intervalos_gtr.append(gtr_row)
+
+    if not intervalos_plan and not intervalos_gtr:
+        return {"error": "Se requieren datos de pronostico (OUTPUT I/II) y/o datos GTR reales"}
+
+    # Calcular COP y COR por intervalo
+    resultados = []
+    max_len = max(len(intervalos_plan), len(intervalos_gtr))
+    for i in range(max_len):
+        row = {"intervalo": "N/A"}
+
+        # COP: Erlang aplicado al pronostico
+        cop = 0
+        if i < len(intervalos_plan):
+            plan = intervalos_plan[i]
+            row["intervalo"] = plan.get("intervalo", "N/A")
+            llamadas_plan = plan.get("llamadas_forecast", plan.get("llamadas_plan", 0))
+            tmo_plan = plan.get("tmo_forecast", plan.get("tmo_plan", 360))
+            if llamadas_plan > 0:
+                ec = _erlang_c_calc(llamadas_plan, tmo_plan)
+                cop = ec["agentes_req"]
+            row["cop_agentes"] = cop
+            row["llamadas_plan"] = round(llamadas_plan, 1)
+            row["tmo_plan"] = round(tmo_plan, 1)
+
+        # COR: Atendidas Real x TMO + Avail
+        cor = 0
+        if i < len(intervalos_gtr):
+            gtr = intervalos_gtr[i]
+            if row["intervalo"] == "N/A":
+                row["intervalo"] = gtr.get("intervalo", "N/A")
+            atendidas = gtr.get("atendidas_real", 0)
+            tmo_real = gtr.get("tmo_real", 0)
+            avail = gtr.get("avail_tiempo", 0)
+            # COR en horas-agente: (atendidas * tmo_real / 3600) + (avail / 3600)
+            cor_horas = (atendidas * tmo_real / 3600) + (avail / 3600)
+            cor = round(cor_horas, 2)
+            row["cor_horas_agente"] = cor
+            row["atendidas_real"] = round(atendidas, 1)
+            row["tmo_real"] = round(tmo_real, 1)
+            row["avail_tiempo"] = round(avail, 1)
+
+        # Diferencia y eficiencia
+        if cop > 0 and cor > 0:
+            row["diferencia_cop_cor"] = round(cop - cor, 2)
+            row["eficiencia_pct"] = round((cor / cop) * 100, 1)
+
+        resultados.append(row)
+
+    cop_total = sum(r.get("cop_agentes", 0) for r in resultados)
+    cor_total = sum(r.get("cor_horas_agente", 0) for r in resultados)
+    return {
+        "tipo_analisis": "cop_cor",
+        "output": "OUTPUT_VI",
+        "descripcion": "COP (Capacidad Operativa Planificada) y COR (Capacidad Operativa Real)",
+        "intervalos": resultados,
+        "resumen": {
+            "total_intervalos": len(resultados),
+            "cop_total": cop_total,
+            "cor_total": round(cor_total, 2),
+            "eficiencia_global_pct": round((cor_total / cop_total) * 100, 1) if cop_total > 0 else 0,
+        },
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  SENTINEL - Runners de Calidad
 # ══════════════════════════════════════════════════════════════════════
 
@@ -1861,10 +2586,18 @@ SKILL_RUNNERS = {
     "ingesta_acd": run_ingesta_acd,
     "ingesta_qa": run_ingesta_qa,
     "ingesta_cx": run_ingesta_cx,
+    "ingesta_cubo_trafico": run_ingesta_cubo_trafico,
+    "ingesta_malla": run_ingesta_malla,
+    "ingesta_gtr": run_ingesta_gtr,
     "validar_fuentes": run_validar_fuentes,
     "transcribir_audio": run_transcribir_audio,
     "generar_dialogo": run_generar_dialogo,
-    # NEXUS
+    # NEXUS - WFM Ciclo Completo
+    "pronostico_erlang": run_pronostico_erlang,
+    "planificacion_proveedor": run_planificacion_proveedor,
+    "programacion_turnos": run_programacion_turnos,
+    "analisis_gtr": run_analisis_gtr,
+    "calcular_cop_cor": run_calcular_cop_cor,
     "ingesta_wfm": run_ingesta_wfm,
     "calcular_carga_trabajo": run_calcular_carga_trabajo,
     "calcular_tmo": run_calcular_tmo,
@@ -1920,7 +2653,8 @@ def execute_skill(agent_id: str, skill_id: str, skill_name: str,
             result = runner(audio_bytes, filename, resultado_previo)
 
         # ── CORTEX: datos ──
-        elif skill_id in ("ingesta_acd", "ingesta_qa", "ingesta_cx"):
+        elif skill_id in ("ingesta_acd", "ingesta_qa", "ingesta_cx",
+                           "ingesta_cubo_trafico", "ingesta_malla", "ingesta_gtr"):
             if not file_bytes:
                 return {"error": "Se requiere un archivo de datos"}
             result = runner(file_bytes, filename)
@@ -1951,6 +2685,11 @@ def execute_skill(agent_id: str, skill_id: str, skill_name: str,
             result = runner(file_bytes, filename, resultado_previo)
 
         elif skill_id == "calcular_staffing":
+            result = runner(file_bytes, filename, texto, resultados_multiples)
+
+        # ── NEXUS: WFM Ciclo Completo ──
+        elif skill_id in ("pronostico_erlang", "planificacion_proveedor",
+                           "programacion_turnos", "analisis_gtr", "calcular_cop_cor"):
             result = runner(file_bytes, filename, texto, resultados_multiples)
 
         # ── SENTINEL: evaluacion ──

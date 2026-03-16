@@ -209,6 +209,68 @@ PIPELINES = {
             },
         ],
     },
+    "ciclo_wfm_completo": {
+        "nombre": "Ciclo WFM Completo (OUTPUTs I-VI)",
+        "descripcion": (
+            "Ejecuta el ciclo WFM completo: Pronostico Erlang (OUTPUT I), "
+            "Planificacion con reductores (OUTPUT II), Programacion de turnos "
+            "(OUTPUTs III-V), y COP/COR (OUTPUT VI). Requiere cubo de trafico."
+        ),
+        "icono": ":material/cycle:",
+        "requiere_archivo": True,
+        "extensiones": [".csv", ".xlsx", ".xls", ".json"],
+        "acepta_texto": True,
+        "texto_placeholder": "Parametros: shrinkage%, ausentismo%, volumen_extra%, metas NdS...",
+        "pasos": [
+            {
+                "agent_id": "cortex",
+                "skill_id": "ingesta_cubo_trafico",
+                "skill_name": "Ingesta Cubo de Trafico",
+                "usa_archivo": True,
+                "descripcion": "Cargando cubo de trafico INTEGRATEL",
+            },
+            {
+                "agent_id": "nexus",
+                "skill_id": "pronostico_erlang",
+                "skill_name": "OUTPUT I: Pronostico Erlang",
+                "usa_resultados_multiples": [0],
+                "usa_texto": True,
+                "descripcion": "Calculando Rac Requerido Disponible (Erlang C)",
+            },
+            {
+                "agent_id": "nexus",
+                "skill_id": "planificacion_proveedor",
+                "skill_name": "OUTPUT II: Planificacion Proveedor",
+                "usa_resultados_multiples": [0, 1],
+                "usa_texto": True,
+                "descripcion": "Calculando Rac Planificado Disponible (+10% + reductores)",
+            },
+            {
+                "agent_id": "nexus",
+                "skill_id": "programacion_turnos",
+                "skill_name": "OUTPUTs III-V: Programacion Turnos",
+                "usa_resultados_multiples": [0, 1, 2],
+                "usa_texto": True,
+                "descripcion": "Generando programacion (Logueado, -Break, Disponible)",
+            },
+            {
+                "agent_id": "nexus",
+                "skill_id": "calcular_cop_cor",
+                "skill_name": "OUTPUT VI: COP y COR",
+                "usa_resultados_multiples": "all",
+                "usa_texto": True,
+                "descripcion": "Calculando Capacidad Operativa Planificada y Real",
+            },
+            {
+                "agent_id": "atlas",
+                "skill_id": "informe_consolidado",
+                "skill_name": "Informe WFM Consolidado",
+                "usa_resultados_multiples": "all",
+                "usa_texto": True,
+                "descripcion": "Generando informe consolidado del ciclo WFM",
+            },
+        ],
+    },
     "facturacion_express": {
         "nombre": "Facturacion Express",
         "descripcion": (

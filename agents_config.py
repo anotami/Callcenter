@@ -62,15 +62,66 @@ AGENTS = {
     # ── 1. CORTEX: Datos ───────────────────────────────────────────────
     "cortex": {
         "nombre": "CORTEX",
-        "rol": "Datos",
+        "rol": "Datos e Ingesta WFM",
         "icono": "database",
         "color": "#4A90D9",
         "descripcion": (
             "Especialista en ingesta, documentacion y validacion de fuentes de datos. "
-            "Procesa archivos ACD, reportes de QA y encuestas CX. "
+            "Procesa Cubos de Trafico, Mallas de Proveedor, datos GTR en tiempo real, "
+            "archivos ACD, reportes de QA y encuestas CX. "
             "Tambien transcribe y diariza audios de llamadas."
         ),
         "habilidades": [
+            {
+                "id": "ingesta_cubo_trafico",
+                "nombre": "Ingesta Cubo de Trafico",
+                "descripcion": (
+                    "Carga el Cubo de Trafico historico desde INTEGRATEL. "
+                    "Contiene volumen de llamadas por intervalo (30min), dia, semana y mes. "
+                    "Detecta columnas: FECHA, INTERVALO, SKILL/COLA, LLAMADAS_RECIBIDAS, "
+                    "LLAMADAS_ATENDIDAS, ABANDONADAS, TMO, ASA, NIVEL_SERVICIO. "
+                    "Este es el INPUT principal para el pronostico de volumen."
+                ),
+                "datos_necesarios": ["Archivo Cubo de Trafico (.csv, .xlsx)"],
+                "resultado": "Cubo de trafico estructurado con volumenes por intervalo, tendencias y estacionalidad",
+                "acepta_archivo": True,
+                "extensiones": [".csv", ".xlsx", ".xls", ".json"],
+                "acepta_texto": True,
+                "acepta_resultado_previo": False,
+            },
+            {
+                "id": "ingesta_malla",
+                "nombre": "Ingesta Malla Proveedor",
+                "descripcion": (
+                    "Carga la Malla de Proveedor desde Kipu. Contiene la programacion "
+                    "planificada con campos: FECHA, INTERVALO, PROVEEDOR, PLANIFICADO, "
+                    "DISPONIBLE, PRONOSTICO, TMO, NIVEL_INTERVALO. "
+                    "Se usa para comparar planificado vs real en el ciclo WFM."
+                ),
+                "datos_necesarios": ["Archivo Malla Proveedor (.csv, .xlsx)"],
+                "resultado": "Malla estructurada con dotacion planificada por intervalo y proveedor",
+                "acepta_archivo": True,
+                "extensiones": [".csv", ".xlsx", ".xls", ".json"],
+                "acepta_texto": True,
+                "acepta_resultado_previo": False,
+            },
+            {
+                "id": "ingesta_gtr",
+                "nombre": "Ingesta Datos GTR",
+                "descripcion": (
+                    "Carga datos de Gestion en Tiempo Real (GTR) del proveedor. "
+                    "Incluye: FECHA, INTERVALO, LOGUEADOS_REAL, DISPONIBLES_REAL, "
+                    "AUX_BREAK, AUX_COACHING, AUX_CAPACITACION, AUX_OTROS, "
+                    "LLAMADAS_REAL, TMO_REAL, ATENDIDAS_REAL. "
+                    "Datos clave para comparar programado vs real."
+                ),
+                "datos_necesarios": ["Archivo GTR con datos reales (.csv, .xlsx)"],
+                "resultado": "Datos GTR estructurados con logueados, disponibles y auxiliares reales",
+                "acepta_archivo": True,
+                "extensiones": [".csv", ".xlsx", ".xls", ".json"],
+                "acepta_texto": True,
+                "acepta_resultado_previo": False,
+            },
             {
                 "id": "ingesta_acd",
                 "nombre": "Ingesta de Datos ACD",
@@ -166,14 +217,117 @@ AGENTS = {
     # ── 2. NEXUS: WFM Capacidad ───────────────────────────────────────
     "nexus": {
         "nombre": "NEXUS",
-        "rol": "WFM Capacidad",
+        "rol": "WFM Ciclo Completo",
         "icono": "calculator",
         "color": "#7B68EE",
         "descripcion": (
-            "Experto en Workforce Management. Calcula carga de trabajo, TMO y staffing "
-            "necesario. Proyecta demanda y dimensiona equipos para cumplir niveles de servicio."
+            "Experto en Workforce Management con ciclo completo: "
+            "Pronostico (Erlang con cubo de trafico) → Planificacion (+10% + reductores) → "
+            "Programacion (turnos, TNPs, breaks) → GTR (real vs planificado) → "
+            "Reportes (COP/COR). Genera los 6 OUTPUTs del proceso WFM."
         ),
         "habilidades": [
+            {
+                "id": "pronostico_erlang",
+                "nombre": "OUTPUT I: Pronostico (Rac Requerido)",
+                "descripcion": (
+                    "Calcula el Rac Requerido Disponible usando Erlang C con datos del Cubo de Trafico. "
+                    "Pronostica volumen entrante a 30/60/90 dias y calcula agentes necesarios "
+                    "por intervalo con pronostico de TMO. Es el OUTPUT I del proceso WFM."
+                ),
+                "datos_necesarios": [
+                    "Cubo de Trafico (resultado de CORTEX) o parametros manuales",
+                ],
+                "resultado": "OUTPUT I: Rac Requerido Disponible por intervalo (Erlang con pronostico)",
+                "acepta_archivo": True,
+                "extensiones": [".csv", ".xlsx", ".xls", ".json"],
+                "acepta_texto": True,
+                "acepta_resultado_previo": True,
+                "agentes_compatibles": ["cortex", "nexus"],
+                "multi_resultado": True,
+            },
+            {
+                "id": "planificacion_proveedor",
+                "nombre": "OUTPUT II: Planificacion Proveedor",
+                "descripcion": (
+                    "Calcula el Rac Planificado Disponible: Erlang con pronostico +10% de volumen, "
+                    "pronostico de TMO y Reductores (ausentismo, rotacion, capacitacion). "
+                    "Es el dato teorico que el centro deberia cubrir al programar horarios. "
+                    "Genera la Malla Proveedor para cargar en Kipu."
+                ),
+                "datos_necesarios": [
+                    "OUTPUT I (Pronostico) o Cubo de Trafico + parametros de reductores",
+                ],
+                "resultado": "OUTPUT II: Rac Planificado Disponible con +10% y reductores por intervalo",
+                "acepta_archivo": True,
+                "extensiones": [".csv", ".xlsx", ".xls", ".json"],
+                "acepta_texto": True,
+                "acepta_resultado_previo": True,
+                "agentes_compatibles": ["nexus", "cortex"],
+                "multi_resultado": True,
+            },
+            {
+                "id": "programacion_turnos",
+                "nombre": "OUTPUT III-V: Programacion Turnos",
+                "descripcion": (
+                    "Genera la programacion de turnos del proveedor. Calcula 3 OUTPUTs: "
+                    "III (Rac Programado Logueado = agentes citados en horario), "
+                    "IV (Programado Logueado - Break = agentes menos breaks programados), "
+                    "V (Rac Programado Disponible = agentes que deben estar disponibles). "
+                    "Programa TNPs: Break, Coach, Capacitaciones, etc."
+                ),
+                "datos_necesarios": [
+                    "OUTPUT II (Planificacion) o Malla Proveedor + dotacion real por proveedor",
+                ],
+                "resultado": "OUTPUTs III/IV/V: Programado Logueado, -Break, Disponible por intervalo",
+                "acepta_archivo": True,
+                "extensiones": [".csv", ".xlsx", ".xls", ".json"],
+                "acepta_texto": True,
+                "acepta_resultado_previo": True,
+                "agentes_compatibles": ["nexus", "cortex"],
+                "multi_resultado": True,
+            },
+            {
+                "id": "analisis_gtr",
+                "nombre": "Analisis GTR (Real vs Plan)",
+                "descripcion": (
+                    "Compara datos reales de GTR vs programacion planificada. "
+                    "Calcula: Logueado Real vs Programado Logueado, "
+                    "Disponible Real vs Requerido Disponible, "
+                    "Rac Requerido Disponible Real (Erlang con trafico y TMO real). "
+                    "Detecta desviaciones y genera alertas en tiempo real."
+                ),
+                "datos_necesarios": [
+                    "Datos GTR reales (resultado de CORTEX) + Programacion (OUTPUT III-V)",
+                ],
+                "resultado": "Comparativo real vs plan con desviaciones, alertas y Erlang real por intervalo",
+                "acepta_archivo": True,
+                "extensiones": [".csv", ".xlsx", ".xls", ".json"],
+                "acepta_texto": True,
+                "acepta_resultado_previo": True,
+                "agentes_compatibles": ["nexus", "cortex"],
+                "multi_resultado": True,
+            },
+            {
+                "id": "calcular_cop_cor",
+                "nombre": "OUTPUT VI: COP y COR",
+                "descripcion": (
+                    "Calcula Capacidad Operativa Planificada (COP) y Real (COR). "
+                    "COP = Erlang aplicado a valores de pronostico de volumen. "
+                    "COR = Total Atendidas Real x TMO + Tiempo de Avail. "
+                    "Compara COP vs COR para medir eficiencia de la operacion."
+                ),
+                "datos_necesarios": [
+                    "Malla con pronostico (CORTEX) + Datos GTR reales (CORTEX) o resultados previos",
+                ],
+                "resultado": "OUTPUT VI: COP, COR, diferencia y eficiencia operativa por intervalo",
+                "acepta_archivo": True,
+                "extensiones": [".csv", ".xlsx", ".xls", ".json"],
+                "acepta_texto": True,
+                "acepta_resultado_previo": True,
+                "agentes_compatibles": ["nexus", "cortex"],
+                "multi_resultado": True,
+            },
             {
                 "id": "ingesta_wfm",
                 "nombre": "Ingesta Metricas x Antiguedad",
@@ -181,13 +335,11 @@ AGENTS = {
                     "Carga y procesa la base 'Metricas x Antiguedad' con metricas por agente y periodo. "
                     "Reconoce 60+ columnas: PERIODO, PROVEEDOR, PLATAFORMA, AGENTE, ANTIGUEDAD, "
                     "ATENDIDAS, REITERADAS, TRANSFERENCIAS, TMO, LLAMADAS_CORTAS, AVAIL, NO_READY, "
-                    "OCUPACION, HOLD, ENCUESTAS, NPS, CALIDAD, SOLUCION, ERROR_ENVIO_A_CAMPO, "
-                    "CUARTILES, FILTROS, RECLAMOS, SAR, TC, PREVENTAS, OLI_POTENCIAL, EFECT, "
-                    "FECHA_ULTIMA_CONEXION, entre otras. Valida datos, calcula KPIs agregados "
-                    "y genera un perfil completo de la operacion."
+                    "OCUPACION, HOLD, NPS, CALIDAD, SOLUCION, ERROR_ENVIO_A_CAMPO, CUARTILES. "
+                    "Valida datos, calcula KPIs agregados y genera un perfil completo."
                 ),
                 "datos_necesarios": ["Archivo Metricas x Antiguedad (.csv, .xlsx)"],
-                "resultado": "Resumen completo de Metricas x Antiguedad con KPIs por dimension, cuartiles y alertas",
+                "resultado": "Resumen completo con KPIs por dimension, cuartiles y alertas",
                 "acepta_archivo": True,
                 "extensiones": [".csv", ".xlsx", ".xls"],
                 "acepta_texto": True,
@@ -232,14 +384,14 @@ AGENTS = {
                 "id": "calcular_staffing",
                 "nombre": "Calcular Staffing (Erlang C)",
                 "descripcion": (
-                    "Calcula el numero de agentes necesarios para cumplir el nivel de servicio "
-                    "objetivo usando el modelo Erlang C. Considera carga, TMO, shrinkage y "
-                    "nivel de servicio target (ej: 80/20)."
+                    "Calculo base de Erlang C para dimensionamiento. "
+                    "Calcula agentes necesarios para un nivel de servicio objetivo. "
+                    "Considera carga, TMO, shrinkage y NdS target (ej: 80/20)."
                 ),
                 "datos_necesarios": [
                     "Carga de trabajo y TMO (resultados de NEXUS) o parametros manuales",
                 ],
-                "resultado": "Staffing requerido por intervalo con ocupacion y nivel de servicio proyectado",
+                "resultado": "Staffing requerido con ocupacion y nivel de servicio proyectado",
                 "acepta_archivo": True,
                 "extensiones": [".csv", ".xlsx", ".xls", ".json"],
                 "acepta_texto": True,
@@ -341,13 +493,13 @@ AGENTS = {
     # ── 4. LEDGER: Financiero ─────────────────────────────────────────
     "ledger": {
         "nombre": "LEDGER",
-        "rol": "Financiero",
+        "rol": "Financiero y Facturacion",
         "icono": "currency-dollar",
         "color": "#FFC107",
         "descripcion": (
-            "Contador del equipo. Calcula facturacion por volumenes atendidos, "
-            "bonos por desempeno segun KPIs alcanzados y penalidades por "
-            "incumplimiento de SLAs."
+            "Contador del equipo. Calcula facturacion usando COP/COR de NEXUS, "
+            "soportes de Bitacora, bonos por desempeno segun KPIs alcanzados "
+            "y penalidades por incumplimiento de SLAs. Paga, Bonifica, Penaliza."
         ),
         "habilidades": [
             {
