@@ -63,7 +63,7 @@ HF_TOKEN = _secret("HF_TOKEN", "")
 
 # LLM (Groq, LM Studio, Ollama, o cualquier API compatible con OpenAI)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.1-8b-instant")
+LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
 LLM_API_KEY = _secret("LLM_API_KEY", "not-needed")
 
 # Groq como proveedor cloud de fallback (opcional)
