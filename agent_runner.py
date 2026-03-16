@@ -286,10 +286,17 @@ def run_probar_modelo(modelo: str, prompt: str = "") -> dict:
         }
 
 
-def _save_secrets_toml(secrets: dict[str, str]) -> None:
-    """Guarda claves sensibles en .streamlit/secrets.toml."""
+def _save_secrets_toml(secrets: dict[str, str]) -> bool:
+    """Guarda claves sensibles en .streamlit/secrets.toml.
+
+    Returns True si se pudo escribir, False si el filesystem es de solo lectura
+    (ej. Streamlit Cloud).
+    """
     secrets_path = Path(__file__).parent / ".streamlit" / "secrets.toml"
-    secrets_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        secrets_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
 
     # Leer existente
     existing: dict[str, str] = {}
@@ -313,7 +320,11 @@ def _save_secrets_toml(secrets: dict[str, str]) -> None:
         # Escapar comillas en el valor
         escaped = v.replace("\\", "\\\\").replace('"', '\\"')
         lines.append(f'{k} = "{escaped}"')
-    secrets_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        secrets_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        return False
+    return True
 
 
 # Claves que se guardan en secrets.toml (sensibles)
@@ -321,7 +332,11 @@ _SECRET_KEYS = {"LLM_API_KEY", "GROQ_API_KEY", "HF_TOKEN", "SQL_PASSWORD"}
 
 
 def save_env_config(values: dict[str, str]) -> None:
-    """Guarda config en .env y secrets sensibles en .streamlit/secrets.toml."""
+    """Guarda config en .env y secrets sensibles en .streamlit/secrets.toml.
+
+    Si secrets.toml no es escribible (ej. Streamlit Cloud con filesystem
+    de solo lectura), los secrets se guardan tambien en .env como fallback.
+    """
     import config as _cfg
 
     env_path = Path(__file__).parent / ".env"
@@ -330,14 +345,22 @@ def save_env_config(values: dict[str, str]) -> None:
     secret_values = {k: v for k, v in values.items() if k in _SECRET_KEYS}
     env_values = {k: v for k, v in values.items() if k not in _SECRET_KEYS}
 
-    # Guardar secrets en .streamlit/secrets.toml
+    # Intentar guardar secrets en .streamlit/secrets.toml
+    secrets_saved = False
     if secret_values:
-        _save_secrets_toml(secret_values)
+        secrets_saved = _save_secrets_toml(secret_values)
 
-    # Guardar no-sensibles en .env
+    # Si no se pudieron guardar en secrets.toml, incluir en .env
+    if not secrets_saved and secret_values:
+        env_values.update(secret_values)
+
+    # Guardar en .env
     lines = []
     if env_path.exists():
-        lines = env_path.read_text(encoding="utf-8").splitlines()
+        try:
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
 
     for key, val in env_values.items():
         found = False
@@ -350,19 +373,24 @@ def save_env_config(values: dict[str, str]) -> None:
         if not found:
             lines.append(f"{key}={val}")
 
-    # Limpiar claves sensibles del .env si existen (moverlas a secrets)
-    cleaned = []
-    for line in lines:
-        stripped = line.lstrip()
-        is_secret_line = any(
-            stripped.startswith(f"{sk}=") or stripped.startswith(f"# {sk}=")
-            for sk in _SECRET_KEYS
-        )
-        if not is_secret_line:
-            cleaned.append(line)
-    lines = cleaned
+    # Solo limpiar claves sensibles del .env si se guardaron en secrets.toml
+    if secrets_saved:
+        cleaned = []
+        for line in lines:
+            stripped = line.lstrip()
+            is_secret_line = any(
+                stripped.startswith(f"{sk}=") or stripped.startswith(f"# {sk}=")
+                for sk in _SECRET_KEYS
+            )
+            if not is_secret_line:
+                cleaned.append(line)
+        lines = cleaned
 
-    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        # Ultimo recurso: al menos actualizar variables en runtime
+        pass
 
     # Actualizar config module en runtime
     for key, val in values.items():
