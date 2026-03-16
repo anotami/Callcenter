@@ -1631,6 +1631,65 @@ Este informe debe ser la vision COMPLETA y EJECUTIVA de la operacion. Responde e
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  VISUALIZAR DATOS - Compartido por todos los agentes
+# ══════════════════════════════════════════════════════════════════════
+
+
+def run_visualizar_datos(file_bytes: bytes | None, filename: str,
+                         resultados_previos: list[dict] | None = None) -> dict:
+    """Genera graficos interactivos a partir de datos o resultados previos.
+
+    Retorna un dict con metadatos; los graficos (figuras Plotly) se almacenan
+    en ``st.session_state`` para ser renderizados por la UI.
+    """
+    from chart_builder import auto_charts_from_result, auto_charts_from_dataframe
+
+    all_figures = []
+
+    # 1. Si hay archivo, generar graficos del DataFrame
+    if file_bytes:
+        df = _load_dataframe(file_bytes, filename)
+        figs = auto_charts_from_dataframe(df, f"{filename}: ")
+        all_figures.extend(figs)
+
+    # 2. Si hay resultados previos, generar graficos de cada uno
+    if resultados_previos:
+        for r in resultados_previos:
+            data = r.get("resultado", {})
+            if isinstance(data, dict):
+                agent = r.get("agent_name", "")
+                figs = auto_charts_from_result(data, agent)
+                all_figures.extend(figs)
+
+    if not all_figures:
+        return {"error": "No se pudieron generar graficos. Verifique que los datos tengan columnas numericas."}
+
+    # Guardar figuras en variable global para que la UI las renderice
+    # (las figuras Plotly no son serializables a JSON)
+    global _last_chart_figures
+    _last_chart_figures = all_figures
+
+    return {
+        "tipo_analisis": "visualizacion",
+        "total_graficos": len(all_figures),
+        "graficos_generados": [
+            fig.layout.title.text if fig.layout.title and fig.layout.title.text else f"Grafico {i+1}"
+            for i, fig in enumerate(all_figures)
+        ],
+        "exportable_pdf": True,
+    }
+
+
+# Variable global para pasar figuras Plotly a la UI
+_last_chart_figures: list = []
+
+
+def get_last_chart_figures() -> list:
+    """Retorna las ultimas figuras generadas por visualizar_datos."""
+    return _last_chart_figures
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  Dispatcher principal
 # ══════════════════════════════════════════════════════════════════════
 
@@ -1664,6 +1723,8 @@ SKILL_RUNNERS = {
     "resumen_equipo": run_resumen_equipo,
     "informe_por_modulo": run_informe_por_modulo,
     "informe_consolidado": run_informe_consolidado,
+    # COMPARTIDO
+    "visualizar_datos": run_visualizar_datos,
 }
 
 
@@ -1745,6 +1806,10 @@ def execute_skill(agent_id: str, skill_id: str, skill_name: str,
         elif skill_id in ("consolidar_wbr", "consolidar_mbr", "analisis_cruzado",
                            "informe_por_modulo", "informe_consolidado"):
             result = runner(file_bytes, filename, texto, resultados_multiples)
+
+        # ── COMPARTIDO: Visualizar ──
+        elif skill_id == "visualizar_datos":
+            result = runner(file_bytes, filename, resultados_multiples)
 
         else:
             return {"error": f"Skill '{skill_id}' sin dispatcher configurado"}

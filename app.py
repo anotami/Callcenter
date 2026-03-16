@@ -14,6 +14,7 @@ from agents_config import get_all_agents, get_skill
 from agent_runner import (
     execute_skill, load_all_results, RESULTS_DIR,
     run_listar_modelos, run_probar_modelo, save_env_config, load_env_values,
+    get_last_chart_figures,
 )
 from prompt_manager import (
     get_current_prompt, get_prompt_versions, get_active_version,
@@ -80,6 +81,64 @@ AGENT_ICONS = {
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".wma"}
 
 _SEMAFORO = {"verde": ":green_circle:", "amarillo": ":yellow_circle:", "rojo": ":red_circle:"}
+
+
+def _render_charts(figures: list, result_meta: dict | None = None):
+    """Renderiza graficos Plotly interactivos con opcion de exportar a PDF/PNG."""
+    if not figures:
+        return
+
+    st.markdown("#### Graficos Interactivos")
+
+    for i, fig in enumerate(figures):
+        st.plotly_chart(fig, use_container_width=True, key=f"chart_{i}_{id(fig)}")
+
+    # ── Botones de exportacion ──
+    st.markdown("---")
+    export_cols = st.columns(3)
+    agent_name = result_meta.get("agent_name", "reporte") if result_meta else "reporte"
+
+    with export_cols[0]:
+        from chart_builder import export_charts_to_pdf
+        title = "Reporte de Graficos"
+        if result_meta:
+            title = f"Reporte {result_meta.get('agent_name', '')} - {result_meta.get('skill_name', '')}"
+        pdf_bytes = export_charts_to_pdf(figures, title, result_meta)
+        if pdf_bytes:
+            # Detectar si es HTML o PDF nativo
+            is_html = pdf_bytes[:15].startswith(b"<!DOCTYPE") or pdf_bytes[:5].startswith(b"<html")
+            st.download_button(
+                label="Descargar PDF" if not is_html else "Descargar HTML (imprimir a PDF)",
+                data=pdf_bytes,
+                file_name=f"graficos_{agent_name}.pdf" if not is_html else f"graficos_{agent_name}.html",
+                mime="application/pdf" if not is_html else "text/html",
+                key="download_pdf",
+                type="primary",
+            )
+
+    with export_cols[1]:
+        from chart_builder import figures_to_png_zip
+        zip_bytes = figures_to_png_zip(figures)
+        if zip_bytes:
+            st.download_button(
+                label="Descargar Graficos (ZIP)",
+                data=zip_bytes,
+                file_name=f"graficos_{agent_name}.zip",
+                mime="application/zip",
+                key="download_zip",
+            )
+
+    with export_cols[2]:
+        st.metric("Total Graficos", len(figures))
+
+
+def _render_auto_charts(data: dict, result_meta: dict | None = None):
+    """Genera y renderiza graficos automaticos a partir de un resultado."""
+    from chart_builder import auto_charts_from_result
+    figures = auto_charts_from_result(data)
+    if figures:
+        _render_charts(figures, result_meta)
+    return len(figures)
 
 
 def _render_atlas_report(data: dict):
@@ -992,8 +1051,18 @@ else:
                         st.error(f"Error: {data['error']}")
 
                     elif isinstance(data, dict):
+                        # ── VISUALIZAR DATOS: graficos interactivos ──
+                        if data.get("tipo_analisis") == "visualizacion":
+                            figures = get_last_chart_figures()
+                            if figures:
+                                _render_charts(figures, result)
+                            else:
+                                st.info(f"Se generaron {data.get('total_graficos', 0)} graficos.")
+                                for g in data.get("graficos_generados", []):
+                                    st.markdown(f"- {g}")
+
                         # Render inteligente segun tipo de resultado
-                        if "dialogo" in data:
+                        elif "dialogo" in data:
                             st.text_area("Dialogo", data["dialogo"], height=300, disabled=True)
                         elif "texto_completo" in data:
                             st.text_area("Transcripcion", data["texto_completo"], height=300, disabled=True)
@@ -1067,6 +1136,13 @@ else:
 
                         with st.expander("Ver JSON completo"):
                             st.json(data)
+
+                        # ── Auto-graficos para cualquier resultado ──
+                        if data.get("tipo_analisis") != "visualizacion":
+                            with st.expander("Graficos automaticos"):
+                                n = _render_auto_charts(data, result)
+                                if n == 0:
+                                    st.caption("No se detectaron datos suficientes para generar graficos.")
                     else:
                         st.write(data)
 

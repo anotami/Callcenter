@@ -9,6 +9,27 @@ LEDGER   -> Financiero
 ATLAS    -> Estrategia ejecutiva
 """
 
+_SKILL_VISUALIZAR = {
+    "id": "visualizar_datos",
+    "nombre": "Visualizar Datos",
+    "descripcion": (
+        "Genera graficos interactivos (Plotly) a partir de resultados previos o archivos de datos. "
+        "Detecta automaticamente el tipo de datos y produce los graficos mas adecuados: "
+        "barras, lineas, torta, radar, heatmap, box plot, gauge, histogramas y mas. "
+        "Permite exportar todos los graficos a PDF o PNG."
+    ),
+    "datos_necesarios": [
+        "Resultado previo de cualquier agente o archivo de datos (.csv, .xlsx)",
+    ],
+    "resultado": "Graficos interactivos con opcion de exportar a PDF",
+    "acepta_archivo": True,
+    "extensiones": [".csv", ".xlsx", ".xls", ".json"],
+    "acepta_texto": False,
+    "acepta_resultado_previo": True,
+    "agentes_compatibles": ["cortex", "nexus", "sentinel", "ledger", "atlas"],
+    "multi_resultado": True,
+}
+
 AGENTS = {
     # ── 0. MODELOS: Configuracion LLM ──────────────────────────────────
     "modelos": {
@@ -138,6 +159,7 @@ AGENTS = {
                 "acepta_resultado_previo": True,
                 "agentes_compatibles": ["cortex"],
             },
+            _SKILL_VISUALIZAR,
         ],
     },
 
@@ -225,6 +247,7 @@ AGENTS = {
                 "agentes_compatibles": ["nexus", "cortex"],
                 "multi_resultado": True,
             },
+            _SKILL_VISUALIZAR,
         ],
     },
 
@@ -311,6 +334,7 @@ AGENTS = {
                 "acepta_resultado_previo": True,
                 "agentes_compatibles": ["sentinel"],
             },
+            _SKILL_VISUALIZAR,
         ],
     },
 
@@ -386,6 +410,7 @@ AGENTS = {
                 "agentes_compatibles": ["cortex", "nexus", "sentinel"],
                 "multi_resultado": True,
             },
+            _SKILL_VISUALIZAR,
         ],
     },
 
@@ -514,6 +539,7 @@ AGENTS = {
                 "agentes_compatibles": ["cortex", "nexus", "sentinel", "ledger"],
                 "multi_resultado": True,
             },
+            _SKILL_VISUALIZAR,
         ],
     },
 }
