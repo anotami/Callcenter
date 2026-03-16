@@ -8,20 +8,22 @@ import logging
 
 logger = logging.getLogger("callcenter.transcriber")
 
-try:
-    from faster_whisper import WhisperModel
-    _WHISPER_AVAILABLE = True
-except ImportError:
-    WhisperModel = None  # type: ignore[assignment,misc]
-    _WHISPER_AVAILABLE = False
-    logger.warning("faster_whisper no esta instalado. La transcripcion de audio no estara disponible.")
-
 from config import WHISPER_MODEL, WHISPER_DEVICE, WHISPER_LANGUAGE
+
+
+def _get_whisper_model_class():
+    """Importa WhisperModel de forma lazy para evitar cache de importacion fallida."""
+    try:
+        from faster_whisper import WhisperModel
+        return WhisperModel
+    except ImportError:
+        return None
 
 
 def load_whisper_model():
     """Carga el modelo faster-whisper. Se recomienda llamar una sola vez."""
-    if not _WHISPER_AVAILABLE:
+    WhisperModel = _get_whisper_model_class()
+    if WhisperModel is None:
         raise ImportError(
             "faster_whisper no esta instalado. "
             "Instala con: pip install faster-whisper"
@@ -44,7 +46,7 @@ def transcribe(model, audio_path: str) -> list[dict]:
         [{"start": 0.0, "end": 2.5, "text": "Hola buenos dias..."}, ...]
     Retorna lista vacia si hay un error de transcripcion.
     """
-    if not _WHISPER_AVAILABLE:
+    if _get_whisper_model_class() is None:
         logger.error("faster_whisper no esta instalado. No se puede transcribir.")
         return []
 
