@@ -408,7 +408,7 @@ elif st.session_state.selected_agent == "modelos":
         # Limpiar estado de deteccion previo
         st.session_state.pop("_modelos_info", None)
         st.session_state.pop("_test_result", None)
-        st.success("Configuracion guardada en `.env` y aplicada.")
+        st.success("Configuracion guardada. API keys en `.streamlit/secrets.toml` (seguro) y config en `.env`.")
         st.rerun()
 
     # ══════════════════════════════════════════════════════════════════

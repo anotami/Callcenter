@@ -284,23 +284,63 @@ def run_probar_modelo(modelo: str, prompt: str = "") -> dict:
         }
 
 
+def _save_secrets_toml(secrets: dict[str, str]) -> None:
+    """Guarda claves sensibles en .streamlit/secrets.toml."""
+    secrets_path = Path(__file__).parent / ".streamlit" / "secrets.toml"
+    secrets_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Leer existente
+    existing: dict[str, str] = {}
+    if secrets_path.exists():
+        try:
+            import tomllib
+            with open(secrets_path, "rb") as f:
+                existing = {k: str(v) for k, v in tomllib.load(f).items()}
+        except Exception:
+            pass
+
+    existing.update(secrets)
+
+    # Escribir TOML
+    header = (
+        "# Secrets - API Keys y credenciales sensibles\n"
+        "# Este archivo NO se sube a git (esta en .gitignore)\n\n"
+    )
+    lines = [header]
+    for k, v in existing.items():
+        # Escapar comillas en el valor
+        escaped = v.replace("\\", "\\\\").replace('"', '\\"')
+        lines.append(f'{k} = "{escaped}"')
+    secrets_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# Claves que se guardan en secrets.toml (sensibles)
+_SECRET_KEYS = {"LLM_API_KEY", "GROQ_API_KEY", "HF_TOKEN", "SQL_PASSWORD"}
+
+
 def save_env_config(values: dict[str, str]) -> None:
-    """Guarda valores en el archivo .env y actualiza config en runtime."""
+    """Guarda config en .env y secrets sensibles en .streamlit/secrets.toml."""
     import config as _cfg
 
     env_path = Path(__file__).parent / ".env"
 
-    # Leer .env existente
+    # Separar valores sensibles de no-sensibles
+    secret_values = {k: v for k, v in values.items() if k in _SECRET_KEYS}
+    env_values = {k: v for k, v in values.items() if k not in _SECRET_KEYS}
+
+    # Guardar secrets en .streamlit/secrets.toml
+    if secret_values:
+        _save_secrets_toml(secret_values)
+
+    # Guardar no-sensibles en .env
     lines = []
     if env_path.exists():
         lines = env_path.read_text(encoding="utf-8").splitlines()
 
-    # Para cada valor, actualizar o agregar
-    for key, val in values.items():
+    for key, val in env_values.items():
         found = False
         for i, line in enumerate(lines):
             stripped = line.lstrip()
-            # Linea activa o comentada con esa key
             if stripped.startswith(f"{key}=") or stripped.startswith(f"# {key}="):
                 lines[i] = f"{key}={val}"
                 found = True
@@ -308,11 +348,24 @@ def save_env_config(values: dict[str, str]) -> None:
         if not found:
             lines.append(f"{key}={val}")
 
-        # Actualizar config module en runtime
-        if hasattr(_cfg, key):
-            setattr(_cfg, key, val)
+    # Limpiar claves sensibles del .env si existen (moverlas a secrets)
+    cleaned = []
+    for line in lines:
+        stripped = line.lstrip()
+        is_secret_line = any(
+            stripped.startswith(f"{sk}=") or stripped.startswith(f"# {sk}=")
+            for sk in _SECRET_KEYS
+        )
+        if not is_secret_line:
+            cleaned.append(line)
+    lines = cleaned
 
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # Actualizar config module en runtime
+    for key, val in values.items():
+        if hasattr(_cfg, key):
+            setattr(_cfg, key, val)
 
 
 def load_env_values() -> dict[str, str]:
