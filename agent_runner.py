@@ -217,21 +217,21 @@ def _llm_analyze(prompt: str, system: str = "") -> dict:
 def run_listar_modelos() -> dict:
     """Conecta al servidor LLM y lista los modelos disponibles."""
     from openai import OpenAI
-    from config import LLM_BASE_URL, LLM_API_KEY
+    import config as _cfg
 
     try:
-        client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
+        client = OpenAI(base_url=_cfg.LLM_BASE_URL, api_key=_cfg.LLM_API_KEY)
         models_response = client.models.list()
         modelos = [m.id for m in models_response.data]
         return {
-            "servidor": LLM_BASE_URL,
+            "servidor": _cfg.LLM_BASE_URL,
             "conectado": True,
             "modelos": modelos,
             "total": len(modelos),
         }
     except Exception as e:
         return {
-            "servidor": LLM_BASE_URL,
+            "servidor": _cfg.LLM_BASE_URL,
             "conectado": False,
             "error": str(e),
             "modelos": [],
@@ -239,20 +239,21 @@ def run_listar_modelos() -> dict:
         }
 
 
-def run_probar_modelo(modelo: str) -> dict:
+def run_probar_modelo(modelo: str, prompt: str = "") -> dict:
     """Prueba un modelo especifico enviandole un mensaje simple."""
     from openai import OpenAI
-    from config import LLM_BASE_URL, LLM_API_KEY
+    import config as _cfg
     import time
 
-    client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
+    prompt = prompt or "Di 'Modelo listo' y tu nombre de modelo."
+    client = OpenAI(base_url=_cfg.LLM_BASE_URL, api_key=_cfg.LLM_API_KEY)
     start = time.time()
     try:
         response = client.chat.completions.create(
             model=modelo,
             messages=[
                 {"role": "system", "content": "Responde en una sola linea corta."},
-                {"role": "user", "content": "Di 'Modelo listo' y tu nombre de modelo."},
+                {"role": "user", "content": prompt},
             ],
             temperature=0.1,
             max_tokens=50,
@@ -272,6 +273,50 @@ def run_probar_modelo(modelo: str) -> dict:
             "error": str(e),
             "tiempo_seg": elapsed,
         }
+
+
+def save_env_config(values: dict[str, str]) -> None:
+    """Guarda valores en el archivo .env y actualiza config en runtime."""
+    import config as _cfg
+
+    env_path = Path(__file__).parent / ".env"
+
+    # Leer .env existente
+    lines = []
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+
+    # Para cada valor, actualizar o agregar
+    for key, val in values.items():
+        found = False
+        for i, line in enumerate(lines):
+            stripped = line.lstrip()
+            # Linea activa o comentada con esa key
+            if stripped.startswith(f"{key}=") or stripped.startswith(f"# {key}="):
+                lines[i] = f"{key}={val}"
+                found = True
+                break
+        if not found:
+            lines.append(f"{key}={val}")
+
+        # Actualizar config module en runtime
+        if hasattr(_cfg, key):
+            setattr(_cfg, key, val)
+
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def load_env_values() -> dict[str, str]:
+    """Lee valores actuales del .env como diccionario."""
+    env_path = Path(__file__).parent / ".env"
+    values = {}
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key, _, val = stripped.partition("=")
+                values[key.strip()] = val.strip()
+    return values
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -11,7 +11,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from agents_config import get_all_agents, get_skill
-from agent_runner import execute_skill, load_all_results, RESULTS_DIR, run_listar_modelos, run_probar_modelo
+from agent_runner import (
+    execute_skill, load_all_results, RESULTS_DIR,
+    run_listar_modelos, run_probar_modelo, save_env_config, load_env_values,
+)
 
 # ── Config ─────────────────────────────────────────────────────────────
 
@@ -143,16 +146,148 @@ elif st.session_state.selected_agent == "modelos":
     st.markdown(agent["descripcion"])
     st.markdown("---")
 
-    from config import LLM_BASE_URL
+    import config as _cfg
+    env_vals = load_env_values()
 
-    col_status, col_test = st.columns([1, 1])
+    tab_config, tab_modelos, tab_test = st.tabs([
+        "Configuracion", "Modelos Disponibles", "Probar Modelo",
+    ])
 
-    with col_status:
-        st.markdown("### Servidor LLM")
-        st.code(LLM_BASE_URL, language=None)
+    # ── TAB 1: Configuracion ──────────────────────────────────────────
+    with tab_config:
+        st.markdown("### Servidor LLM Principal")
+        col_llm1, col_llm2 = st.columns(2)
+        with col_llm1:
+            new_base_url = st.text_input(
+                "URL del servidor LLM",
+                value=_cfg.LLM_BASE_URL,
+                key="_cfg_llm_base_url",
+                help="Ollama: http://localhost:11434/v1 | LM Studio: http://localhost:1234/v1",
+            )
+            new_llm_model = st.text_input(
+                "Modelo principal",
+                value=_cfg.LLM_MODEL,
+                key="_cfg_llm_model",
+                help="Nombre del modelo a usar (ej: llama3.2:3b, mistral:7b)",
+            )
+        with col_llm2:
+            new_api_key = st.text_input(
+                "API Key LLM",
+                value=_cfg.LLM_API_KEY,
+                key="_cfg_llm_api_key",
+                type="password",
+                help="Dejar 'not-needed' si el servidor local no requiere autenticacion",
+            )
+            new_fallback = st.text_input(
+                "Modelos fallback locales (separados por coma)",
+                value=",".join(_cfg.LLM_FALLBACK_MODELS),
+                key="_cfg_llm_fallback",
+                help="Modelos alternativos si el principal falla",
+            )
+
+        st.markdown("---")
+        st.markdown("### Groq Cloud (Fallback)")
+        col_g1, col_g2 = st.columns(2)
+        with col_g1:
+            new_groq_key = st.text_input(
+                "Groq API Key",
+                value=_cfg.GROQ_API_KEY,
+                key="_cfg_groq_key",
+                type="password",
+                help="Obtener en https://console.groq.com/keys — dejar vacio para desactivar",
+            )
+        with col_g2:
+            st.text_input(
+                "Groq Base URL",
+                value=_cfg.GROQ_BASE_URL,
+                disabled=True,
+                help="URL fija de Groq",
+            )
+
+        st.markdown("---")
+        st.markdown("### Whisper (Transcripcion de Audio)")
+        col_w1, col_w2, col_w3 = st.columns(3)
+        with col_w1:
+            new_whisper_model = st.selectbox(
+                "Modelo Whisper",
+                ["tiny", "base", "small", "medium", "large-v2", "large-v3"],
+                index=["tiny", "base", "small", "medium", "large-v2", "large-v3"].index(
+                    _cfg.WHISPER_MODEL
+                ) if _cfg.WHISPER_MODEL in ["tiny", "base", "small", "medium", "large-v2", "large-v3"] else 5,
+                key="_cfg_whisper_model",
+            )
+        with col_w2:
+            new_whisper_device = st.selectbox(
+                "Dispositivo",
+                ["cuda", "cpu"],
+                index=0 if _cfg.WHISPER_DEVICE == "cuda" else 1,
+                key="_cfg_whisper_device",
+            )
+        with col_w3:
+            new_whisper_lang = st.text_input(
+                "Idioma",
+                value=_cfg.WHISPER_LANGUAGE,
+                key="_cfg_whisper_lang",
+                help="Codigo ISO (es, en, pt, etc.)",
+            )
+
+        st.markdown("---")
+        st.markdown("### HuggingFace (Diarizacion)")
+        new_hf_token = st.text_input(
+            "HuggingFace Token",
+            value=_cfg.HF_TOKEN,
+            key="_cfg_hf_token",
+            type="password",
+            help="Necesario para pyannote. Obtener en https://huggingface.co/settings/tokens",
+        )
+
+        st.markdown("---")
+        st.markdown("### Base de Datos (SQL Server)")
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            new_sql_server = st.text_input("Servidor", value=_cfg.SQL_SERVER, key="_cfg_sql_server")
+            new_sql_db = st.text_input("Base de datos", value=_cfg.SQL_DATABASE, key="_cfg_sql_db")
+            new_sql_driver = st.text_input("Driver ODBC", value=_cfg.SQL_DRIVER, key="_cfg_sql_driver")
+        with col_s2:
+            new_sql_user = st.text_input("Usuario", value=_cfg.SQL_USERNAME, key="_cfg_sql_user")
+            new_sql_pass = st.text_input("Password", value=_cfg.SQL_PASSWORD, key="_cfg_sql_pass", type="password")
+
+        st.markdown("---")
+
+        if st.button("Guardar Configuracion", use_container_width=True, type="primary",
+                      icon=":material/save:"):
+            changes = {
+                "LLM_BASE_URL": new_base_url,
+                "LLM_MODEL": new_llm_model,
+                "LLM_API_KEY": new_api_key,
+                "LLM_FALLBACK_MODELS": new_fallback,
+                "GROQ_API_KEY": new_groq_key,
+                "WHISPER_MODEL": new_whisper_model,
+                "WHISPER_DEVICE": new_whisper_device,
+                "WHISPER_LANGUAGE": new_whisper_lang,
+                "HF_TOKEN": new_hf_token,
+                "SQL_SERVER": new_sql_server,
+                "SQL_DATABASE": new_sql_db,
+                "SQL_USERNAME": new_sql_user,
+                "SQL_PASSWORD": new_sql_pass,
+                "SQL_DRIVER": new_sql_driver,
+            }
+            save_env_config(changes)
+            # Actualizar fallback list en runtime
+            _cfg.LLM_FALLBACK_MODELS = [
+                m.strip() for m in new_fallback.split(",") if m.strip()
+            ]
+            st.session_state.selected_model = new_llm_model
+            st.success("Configuracion guardada en `.env` y aplicada en runtime.")
+            st.rerun()
+
+    # ── TAB 2: Modelos Disponibles ────────────────────────────────────
+    with tab_modelos:
+        st.markdown("### Detectar Modelos en el Servidor")
+        st.code(_cfg.LLM_BASE_URL, language=None)
 
         if st.button("Detectar Modelos", use_container_width=True, type="primary",
-                      icon=":material/refresh:"):
+                      icon=":material/refresh:", key="_btn_detectar"):
             with st.spinner("Conectando al servidor..."):
                 info = run_listar_modelos()
                 st.session_state["_modelos_info"] = info
@@ -163,8 +298,7 @@ elif st.session_state.selected_agent == "modelos":
                 st.success(f"Conectado — {info['total']} modelo(s) encontrado(s)")
                 modelos = info["modelos"]
                 if modelos:
-                    st.markdown("### Seleccionar Modelo")
-                    # Determinar indice del modelo actual
+                    st.markdown("### Seleccionar Modelo Activo")
                     current = st.session_state.selected_model
                     idx = modelos.index(current) if current in modelos else 0
 
@@ -176,39 +310,46 @@ elif st.session_state.selected_agent == "modelos":
                     )
                     if chosen != st.session_state.selected_model:
                         st.session_state.selected_model = chosen
-                        # Actualizar config en runtime
-                        import config
-                        config.LLM_MODEL = chosen
+                        _cfg.LLM_MODEL = chosen
+                        save_env_config({"LLM_MODEL": chosen})
                         st.success(f"Modelo activo: **{chosen}**")
                         st.rerun()
 
                     st.info(f"Modelo activo: **{st.session_state.selected_model}**")
+                else:
+                    st.warning("El servidor respondio pero no tiene modelos cargados.")
             else:
                 st.error(f"No se pudo conectar: {info.get('error', 'Error desconocido')}")
                 st.warning(
                     "Verifica que Ollama/LM Studio este corriendo y que la URL sea correcta.\n\n"
-                    f"URL configurada: `{LLM_BASE_URL}`"
+                    f"URL configurada: `{_cfg.LLM_BASE_URL}`"
                 )
 
-    with col_test:
-        st.markdown("### Probar Modelo")
+    # ── TAB 3: Probar Modelo ──────────────────────────────────────────
+    with tab_test:
+        st.markdown("### Probar un Modelo")
 
         info = st.session_state.get("_modelos_info")
         modelos_disponibles = info["modelos"] if info and info["conectado"] else []
 
         if not modelos_disponibles:
-            st.caption("Primero detecta los modelos disponibles.")
+            st.caption("Ve a la pestana 'Modelos Disponibles' y detecta los modelos primero.")
         else:
             modelo_test = st.selectbox(
                 "Modelo a probar:",
                 modelos_disponibles,
                 key="_select_test_modelo",
             )
+            prompt_test = st.text_input(
+                "Mensaje de prueba (opcional)",
+                value="Di 'Modelo listo' y tu nombre de modelo.",
+                key="_prompt_test",
+            )
 
             if st.button(f"Probar {modelo_test}", use_container_width=True,
-                          icon=":material/play_arrow:"):
+                          icon=":material/play_arrow:", key="_btn_probar"):
                 with st.spinner(f"Probando {modelo_test}..."):
-                    test_result = run_probar_modelo(modelo_test)
+                    test_result = run_probar_modelo(modelo_test, prompt_test)
                     st.session_state["_test_result"] = test_result
 
             test_result = st.session_state.get("_test_result")
