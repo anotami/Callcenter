@@ -153,6 +153,25 @@ AGENTS = {
         ),
         "habilidades": [
             {
+                "id": "ingesta_wfm",
+                "nombre": "Ingesta Base WFM",
+                "descripcion": (
+                    "Carga y procesa la base de datos maestra de WFM con metricas por agente y periodo. "
+                    "Reconoce 60+ columnas: PERIODO, PROVEEDOR, PLATAFORMA, AGENTE, ANTIGUEDAD, "
+                    "ATENDIDAS, REITERADAS, TRANSFERENCIAS, TMO, LLAMADAS_CORTAS, AVAIL, NO_READY, "
+                    "OCUPACION, HOLD, ENCUESTAS, NPS, CALIDAD, SOLUCION, ERROR_ENVIO_A_CAMPO, "
+                    "CUARTILES, FILTROS, RECLAMOS, SAR, TC, PREVENTAS, OLI_POTENCIAL, EFECT, "
+                    "FECHA_ULTIMA_CONEXION, entre otras. Valida datos, calcula KPIs agregados "
+                    "y genera un perfil completo de la operacion."
+                ),
+                "datos_necesarios": ["Archivo base WFM (.csv, .xlsx)"],
+                "resultado": "Resumen completo de la base WFM con KPIs por dimension, cuartiles y alertas",
+                "acepta_archivo": True,
+                "extensiones": [".csv", ".xlsx", ".xls"],
+                "acepta_texto": True,
+                "acepta_resultado_previo": False,
+            },
+            {
                 "id": "calcular_carga_trabajo",
                 "nombre": "Calcular Carga de Trabajo",
                 "descripcion": (

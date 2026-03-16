@@ -596,6 +596,327 @@ def run_generar_dialogo(audio_bytes: bytes, filename: str,
 # ══════════════════════════════════════════════════════════════════════
 
 
+_WFM_COLUMNS = {
+    # ── Dimensiones / identificadores ──
+    "PERIODO", "PROVEEDOR", "PLATAFORMA", "AGENTE",
+    "ANTIGUEDAD_AGENTE", "ANTIGUEDAD_AGENTE_AGRUPA",
+    "ANTIGUEDAD_PLATAFORMA", "ANTIGUEDAD_PLATAFORMA_AGRUPADO",
+    "PLATAFORMA_MAYOR", "GRUPO_PLATAFORMA",
+    "DIAS_LABORADOS_MES", "DIAS_LABORADOS_PLATAFORMA_TOTAL",
+    # ── Volumen ──
+    "ATENDIDAS",
+    # ── Reiteradas ──
+    "CANTIDAD_REITERADAS", "REITERADAS_DENOMINADOR",
+    "%_REITERADAS", "CUARTIL_REITERADAS",
+    # ── Transferencias ──
+    "CANTIDAD_TRANSFERENCIAS", "TRANSFERENCIAS_DENOMINADOR",
+    "%_TRANSFERENCIAS", "CUARTIL_TRANSFERENCIAS",
+    # ── TMO ──
+    "NUMERADOR_TMO", "TMO", "CUARTIL_TMO",
+    # ── Llamadas cortas ──
+    "LLAMADAS_CORTAS", "%_LLAMADAS_CORTAS",
+    # ── Tiempos de estado ──
+    "TIEMPO_LOGIN_SEGUNDOS",
+    "AVAIL_SEGUNDOS", "%_AVAIL", "CUARTIL_AVAIL",
+    "NO_READY_SEGUNDOS", "%_NO_READY", "CUARTIL_NO_READY",
+    "OCUPADO_SEGUNDOS", "%_OCUPACION", "CUARTIL_OCUPACION",
+    "HOLD_SEGUNDOS", "%_HOLD", "CUARTIL_HOLD",
+    # ── Encuestas / Calidad ──
+    "TOTAL_ENCUESTAS_OUT", "CALIDAD_DENOMINADOR",
+    "SOLUCION_NUMERADOR", "%_SOLUCION_OUT", "CUARTIL_SOLUCION_OUT",
+    "NPS_NUMERADOR", "NPS_OUT", "CUARTIL_NPS",
+    # ── Errores campo ──
+    "ERROR_ENVIO_A_CAMPO", "CUARTIL_ERROR_ENVIO_A_CAMPO",
+    # ── Cuartil resumen ──
+    "PEOR_CUARTIL",
+    # ── Filtros ──
+    "FILTRO_ATENDIDAS_EN_EL_MES", "MESA_ANTIGUEDAD_AGENTE_AGRUPA",
+    "FILTRO_TRANSFERENCIAS", "FILTRO_REITERADAS",
+    "TRANSFERIDAS_RETEN",
+    # ── Comercial ──
+    "RECLAMOS", "SAR", "TC", "OPINIONES",
+    "PREVENTAS", "CUARTIL_PREVENTAS",
+    "OLI_POTENCIAL", "EFECT",
+    # ── Conexion ──
+    "FECHA_ULTIMA_CONEXION",
+}
+
+# Columnas que contienen porcentajes (0-100 o 0-1)
+_WFM_PCT_COLS = {
+    "%_REITERADAS", "%_TRANSFERENCIAS", "%_LLAMADAS_CORTAS",
+    "%_AVAIL", "%_NO_READY", "%_OCUPACION", "%_HOLD",
+    "%_SOLUCION_OUT",
+}
+
+# Columnas de cuartil (1-4)
+_WFM_CUARTIL_COLS = {
+    "CUARTIL_REITERADAS", "CUARTIL_TRANSFERENCIAS", "CUARTIL_TMO",
+    "CUARTIL_AVAIL", "CUARTIL_NO_READY", "CUARTIL_OCUPACION",
+    "CUARTIL_HOLD", "CUARTIL_SOLUCION_OUT", "CUARTIL_NPS",
+    "CUARTIL_ERROR_ENVIO_A_CAMPO", "CUARTIL_PREVENTAS",
+    "PEOR_CUARTIL",
+}
+
+# Columnas numericas clave para estadisticas
+_WFM_KPI_COLS = {
+    "ATENDIDAS", "TMO", "%_REITERADAS", "%_TRANSFERENCIAS",
+    "%_AVAIL", "%_NO_READY", "%_OCUPACION", "%_HOLD",
+    "NPS_OUT", "%_SOLUCION_OUT", "PREVENTAS", "RECLAMOS",
+}
+
+
+def _normalize_wfm_columns(df) -> tuple:
+    """Normaliza nombres de columnas de la base WFM.
+
+    Devuelve (df_normalizado, mapa_de_alias).
+    """
+    alias_map = {}
+    rename = {}
+    for col in df.columns:
+        upper = col.strip().upper().replace(" ", "_")
+        if upper != col:
+            rename[col] = upper
+            alias_map[upper] = col
+    if rename:
+        df = df.rename(columns=rename)
+    return df, alias_map
+
+
+def _wfm_dimension_summary(df, col_name: str) -> dict | None:
+    """Resumen de cardinalidad para una columna de dimension."""
+    if col_name not in df.columns:
+        return None
+    series = df[col_name].dropna()
+    if series.empty:
+        return None
+    unique = series.nunique()
+    top = series.value_counts().head(10)
+    return {
+        "valores_unicos": unique,
+        "top_10": {str(k): int(v) for k, v in top.items()},
+    }
+
+
+def _wfm_kpi_stats(df, cols: list[str]) -> dict:
+    """Estadisticas detalladas para columnas KPI numericas."""
+    stats = {}
+    for col in cols:
+        if col not in df.columns:
+            continue
+        s = pd.to_numeric(df[col], errors="coerce")
+        if s.isna().all():
+            continue
+        stats[col] = {
+            "min": round(float(s.min()), 2),
+            "max": round(float(s.max()), 2),
+            "promedio": round(float(s.mean()), 2),
+            "mediana": round(float(s.median()), 2),
+            "std": round(float(s.std()), 2),
+            "p10": round(float(s.quantile(0.10)), 2),
+            "p90": round(float(s.quantile(0.90)), 2),
+            "nulos": int(s.isna().sum()),
+        }
+    return stats
+
+
+def _wfm_cuartil_distribution(df, cols: list[str]) -> dict:
+    """Distribucion de cuartiles."""
+    dist = {}
+    for col in cols:
+        if col not in df.columns:
+            continue
+        s = df[col].dropna()
+        if s.empty:
+            continue
+        counts = s.value_counts().sort_index()
+        dist[col] = {str(k): int(v) for k, v in counts.items()}
+    return dist
+
+
+def run_ingesta_wfm(file_bytes: bytes | None, filename: str,
+                    texto: str = "") -> dict:
+    """Ingesta de la base de datos maestra WFM con 60+ columnas por agente/periodo."""
+    if not file_bytes:
+        return {"error": "Se requiere un archivo de datos (.csv o .xlsx)"}
+
+    df = _load_dataframe(file_bytes, filename)
+    df, alias_map = _normalize_wfm_columns(df)
+
+    # ── Columnas reconocidas vs desconocidas ──
+    col_set = set(df.columns)
+    reconocidas = col_set & _WFM_COLUMNS
+    no_reconocidas = col_set - _WFM_COLUMNS
+
+    # ── Resumen basico ──
+    summary = _df_summary(df, filename)
+    summary["tipo_analisis"] = "ingesta_wfm"
+    summary["columnas_reconocidas"] = sorted(reconocidas)
+    summary["columnas_no_reconocidas"] = sorted(no_reconocidas)
+    summary["cobertura_columnas_pct"] = round(
+        len(reconocidas) / max(len(col_set), 1) * 100, 1
+    )
+
+    # ── Dimensiones ──
+    dimensiones = {}
+    for dim_col in ["PERIODO", "PROVEEDOR", "PLATAFORMA", "GRUPO_PLATAFORMA",
+                    "ANTIGUEDAD_AGENTE_AGRUPA", "ANTIGUEDAD_PLATAFORMA_AGRUPADO",
+                    "PLATAFORMA_MAYOR"]:
+        res = _wfm_dimension_summary(df, dim_col)
+        if res:
+            dimensiones[dim_col] = res
+    summary["dimensiones"] = dimensiones
+
+    # ── Total agentes unicos ──
+    if "AGENTE" in df.columns:
+        summary["total_agentes"] = int(df["AGENTE"].nunique())
+
+    # ── Periodos detectados ──
+    if "PERIODO" in df.columns:
+        periodos = sorted(df["PERIODO"].dropna().unique().tolist())
+        summary["periodos"] = [str(p) for p in periodos]
+        summary["total_periodos"] = len(periodos)
+
+    # ── KPIs numericos ──
+    kpi_cols_present = [c for c in _WFM_KPI_COLS if c in df.columns]
+    summary["kpis"] = _wfm_kpi_stats(df, kpi_cols_present)
+
+    # ── Cuartiles ──
+    cuartil_cols_present = [c for c in _WFM_CUARTIL_COLS if c in df.columns]
+    summary["distribucion_cuartiles"] = _wfm_cuartil_distribution(df, cuartil_cols_present)
+
+    # ── Tiempos de estado ──
+    tiempos_cols = ["TIEMPO_LOGIN_SEGUNDOS", "AVAIL_SEGUNDOS", "NO_READY_SEGUNDOS",
+                    "OCUPADO_SEGUNDOS", "HOLD_SEGUNDOS"]
+    tiempos_present = [c for c in tiempos_cols if c in df.columns]
+    if tiempos_present:
+        summary["tiempos_estado"] = _wfm_kpi_stats(df, tiempos_present)
+
+    # ── Deteccion de alertas automaticas ──
+    alertas = []
+
+    # Agentes con PEOR_CUARTIL == 4 (o el peor)
+    if "PEOR_CUARTIL" in df.columns:
+        peor = pd.to_numeric(df["PEOR_CUARTIL"], errors="coerce")
+        n_cuartil4 = int((peor >= 4).sum())
+        if n_cuartil4 > 0:
+            alertas.append({
+                "tipo": "cuartil_critico",
+                "mensaje": f"{n_cuartil4} registros con PEOR_CUARTIL >= 4",
+                "cantidad": n_cuartil4,
+            })
+
+    # TMO fuera de rango (> p90)
+    if "TMO" in df.columns:
+        tmo = pd.to_numeric(df["TMO"], errors="coerce").dropna()
+        if not tmo.empty:
+            p90 = tmo.quantile(0.90)
+            n_alto = int((tmo > p90).sum())
+            if n_alto > 0:
+                alertas.append({
+                    "tipo": "tmo_alto",
+                    "mensaje": f"{n_alto} registros con TMO > p90 ({round(float(p90), 0)}s)",
+                    "cantidad": n_alto,
+                    "umbral_p90": round(float(p90), 0),
+                })
+
+    # NPS negativo
+    if "NPS_OUT" in df.columns:
+        nps = pd.to_numeric(df["NPS_OUT"], errors="coerce").dropna()
+        if not nps.empty:
+            n_neg = int((nps < 0).sum())
+            if n_neg > 0:
+                alertas.append({
+                    "tipo": "nps_negativo",
+                    "mensaje": f"{n_neg} registros con NPS negativo",
+                    "cantidad": n_neg,
+                })
+
+    # Ocupacion extrema (> 95%)
+    if "%_OCUPACION" in df.columns:
+        ocu = pd.to_numeric(df["%_OCUPACION"], errors="coerce").dropna()
+        if not ocu.empty:
+            # Determinar si esta en 0-1 o 0-100
+            max_val = ocu.max()
+            umbral = 95 if max_val > 1 else 0.95
+            n_extrema = int((ocu > umbral).sum())
+            if n_extrema > 0:
+                alertas.append({
+                    "tipo": "ocupacion_extrema",
+                    "mensaje": f"{n_extrema} registros con ocupacion > 95%",
+                    "cantidad": n_extrema,
+                })
+
+    # Datos faltantes criticos
+    criticas = ["ATENDIDAS", "TMO", "AGENTE", "PERIODO"]
+    for col in criticas:
+        if col in df.columns:
+            nulos = int(df[col].isna().sum())
+            if nulos > 0:
+                alertas.append({
+                    "tipo": "datos_faltantes",
+                    "mensaje": f"{col} tiene {nulos} valores nulos ({round(nulos/len(df)*100,1)}%)",
+                    "columna": col,
+                    "cantidad": nulos,
+                })
+
+    summary["alertas"] = alertas
+
+    # ── Resumen por proveedor (si existe) ──
+    if "PROVEEDOR" in df.columns and "ATENDIDAS" in df.columns:
+        agg_cols = {}
+        if "ATENDIDAS" in df.columns:
+            agg_cols["ATENDIDAS"] = "sum"
+        if "TMO" in df.columns:
+            agg_cols["TMO"] = "mean"
+        if "AGENTE" in df.columns:
+            agg_cols["AGENTE"] = "nunique"
+        if agg_cols:
+            resumen_prov = df.groupby("PROVEEDOR").agg(agg_cols)
+            resumen_prov = resumen_prov.round(1)
+            if "AGENTE" in resumen_prov.columns:
+                resumen_prov = resumen_prov.rename(columns={"AGENTE": "agentes_unicos"})
+            summary["resumen_por_proveedor"] = resumen_prov.to_dict(orient="index")
+
+    # ── Resumen por plataforma (si existe) ──
+    if "PLATAFORMA" in df.columns and "ATENDIDAS" in df.columns:
+        agg_cols = {"ATENDIDAS": "sum"}
+        if "TMO" in df.columns:
+            agg_cols["TMO"] = "mean"
+        if "AGENTE" in df.columns:
+            agg_cols["AGENTE"] = "nunique"
+        resumen_plat = df.groupby("PLATAFORMA").agg(agg_cols)
+        resumen_plat = resumen_plat.round(1)
+        if "AGENTE" in resumen_plat.columns:
+            resumen_plat = resumen_plat.rename(columns={"AGENTE": "agentes_unicos"})
+        summary["resumen_por_plataforma"] = resumen_plat.to_dict(orient="index")
+
+    # ── Muestra ampliada para LLM (10 filas) ──
+    summary["muestra"] = df.head(10).to_dict(orient="records")
+
+    # ── Enviar a LLM para analisis contextual si hay texto del usuario ──
+    if texto and texto.strip():
+        resumen_json = json.dumps(summary, ensure_ascii=False, cls=_SafeEncoder)
+        # Truncar para el prompt
+        resumen_truncado = resumen_json[:6000]
+        prompt = f"""Analiza esta base de datos WFM de call center.
+
+Contexto del usuario: {texto}
+
+Datos cargados:
+{resumen_truncado}
+
+Responde en JSON con:
+- "analisis": texto con hallazgos principales sobre los datos
+- "kpis_destacados": lista de los 5 KPIs mas relevantes con "nombre", "valor", "interpretacion"
+- "segmentos_criticos": proveedores, plataformas o agentes que requieren atencion
+- "recomendaciones": lista de acciones sugeridas
+"""
+        llm_result = _llm_analyze(prompt)
+        summary["analisis_llm"] = llm_result
+
+    return summary
+
+
 def run_calcular_carga_trabajo(file_bytes: bytes | None, filename: str,
                                 resultado_previo: dict | None = None) -> dict:
     if file_bytes:
@@ -1323,6 +1644,7 @@ SKILL_RUNNERS = {
     "transcribir_audio": run_transcribir_audio,
     "generar_dialogo": run_generar_dialogo,
     # NEXUS
+    "ingesta_wfm": run_ingesta_wfm,
     "calcular_carga_trabajo": run_calcular_carga_trabajo,
     "calcular_tmo": run_calcular_tmo,
     "calcular_staffing": run_calcular_staffing,
@@ -1397,6 +1719,11 @@ def execute_skill(agent_id: str, skill_id: str, skill_name: str,
                 result = run_detectar_rac(texto, resultados_multiples)
 
         # ── NEXUS ──
+        elif skill_id == "ingesta_wfm":
+            if not file_bytes:
+                return {"error": "Se requiere un archivo de datos"}
+            result = runner(file_bytes, filename, texto)
+
         elif skill_id in ("calcular_carga_trabajo", "calcular_tmo"):
             result = runner(file_bytes, filename, resultado_previo)
 
