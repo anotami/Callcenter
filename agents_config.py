@@ -10,6 +10,34 @@ ATLAS    -> Estrategia ejecutiva
 """
 
 AGENTS = {
+    # ── 0. MODELOS: Configuracion LLM ──────────────────────────────────
+    "modelos": {
+        "nombre": "MODELOS",
+        "rol": "Configuracion LLM",
+        "icono": "cpu",
+        "color": "#17A2B8",
+        "descripcion": (
+            "Detecta y prueba los modelos LLM disponibles en tu servidor local (Ollama/LM Studio). "
+            "Permite seleccionar cual modelo usaran los demas agentes para sus analisis."
+        ),
+        "habilidades": [
+            {
+                "id": "probar_modelos",
+                "nombre": "Probar Modelos Disponibles",
+                "descripcion": (
+                    "Conecta al servidor LLM, lista todos los modelos disponibles, "
+                    "y permite probar cada uno con un mensaje de prueba para verificar "
+                    "que responden correctamente."
+                ),
+                "datos_necesarios": [],
+                "resultado": "Lista de modelos con estado de conexion y modelo seleccionado",
+                "acepta_archivo": False,
+                "acepta_texto": False,
+                "acepta_resultado_previo": False,
+            },
+        ],
+    },
+
     # ── 1. CORTEX: Datos ───────────────────────────────────────────────
     "cortex": {
         "nombre": "CORTEX",

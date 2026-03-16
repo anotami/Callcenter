@@ -1,6 +1,6 @@
 """
 Streamlit UI - Equipo de Agentes de Call Center
-CORTEX | NEXUS | SENTINEL | LEDGER | ATLAS
+MODELOS | CORTEX | NEXUS | SENTINEL | LEDGER | ATLAS
 """
 
 import streamlit as st
@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from agents_config import get_all_agents, get_skill
-from agent_runner import execute_skill, load_all_results, RESULTS_DIR
+from agent_runner import execute_skill, load_all_results, RESULTS_DIR, run_listar_modelos, run_probar_modelo
 
 # ── Config ─────────────────────────────────────────────────────────────
 
@@ -55,10 +55,14 @@ if "selected_skill" not in st.session_state:
     st.session_state.selected_skill = None
 if "execution_result" not in st.session_state:
     st.session_state.execution_result = None
+if "selected_model" not in st.session_state:
+    from config import LLM_MODEL
+    st.session_state.selected_model = LLM_MODEL
 
 AGENTS = get_all_agents()
 
 AGENT_ICONS = {
+    "modelos": ":material/memory:",
     "cortex": ":material/database:",
     "nexus": ":material/calculate:",
     "sentinel": ":material/verified_user:",
@@ -111,8 +115,10 @@ if st.session_state.selected_agent is None:
     st.markdown("### Tu equipo de agentes inteligentes para operaciones de call center")
     st.markdown("---")
 
-    cols = st.columns(len(AGENTS))
-    for i, (agent_id, agent) in enumerate(AGENTS.items()):
+    # Mostrar solo agentes operativos (excluir modelos)
+    operational_agents = {k: v for k, v in AGENTS.items() if k != "modelos"}
+    cols = st.columns(len(operational_agents))
+    for i, (agent_id, agent) in enumerate(operational_agents.items()):
         with cols[i]:
             st.markdown(f"#### {agent['nombre']}")
             st.markdown(f'<span class="agent-role">{agent["rol"]}</span>', unsafe_allow_html=True)
@@ -128,6 +134,91 @@ if st.session_state.selected_agent is None:
         ca.metric("Total Tareas", len(all_results))
         cb.metric("Agentes Activos", len(set(r.get("agent_id") for r in all_results)))
         cc.metric("Dias con Actividad", len(set(r.get("fecha") for r in all_results)))
+
+elif st.session_state.selected_agent == "modelos":
+    # ── Vista especial: MODELOS ────────────────────────────────────────
+    agent = AGENTS["modelos"]
+    st.markdown(f"# {agent['nombre']}")
+    st.markdown(f'<span class="agent-role">{agent["rol"]}</span>', unsafe_allow_html=True)
+    st.markdown(agent["descripcion"])
+    st.markdown("---")
+
+    from config import LLM_BASE_URL
+
+    col_status, col_test = st.columns([1, 1])
+
+    with col_status:
+        st.markdown("### Servidor LLM")
+        st.code(LLM_BASE_URL, language=None)
+
+        if st.button("Detectar Modelos", use_container_width=True, type="primary",
+                      icon=":material/refresh:"):
+            with st.spinner("Conectando al servidor..."):
+                info = run_listar_modelos()
+                st.session_state["_modelos_info"] = info
+
+        info = st.session_state.get("_modelos_info")
+        if info:
+            if info["conectado"]:
+                st.success(f"Conectado — {info['total']} modelo(s) encontrado(s)")
+                modelos = info["modelos"]
+                if modelos:
+                    st.markdown("### Seleccionar Modelo")
+                    # Determinar indice del modelo actual
+                    current = st.session_state.selected_model
+                    idx = modelos.index(current) if current in modelos else 0
+
+                    chosen = st.radio(
+                        "Modelo para los agentes:",
+                        modelos,
+                        index=idx,
+                        key="_radio_modelo",
+                    )
+                    if chosen != st.session_state.selected_model:
+                        st.session_state.selected_model = chosen
+                        # Actualizar config en runtime
+                        import config
+                        config.LLM_MODEL = chosen
+                        st.success(f"Modelo activo: **{chosen}**")
+                        st.rerun()
+
+                    st.info(f"Modelo activo: **{st.session_state.selected_model}**")
+            else:
+                st.error(f"No se pudo conectar: {info.get('error', 'Error desconocido')}")
+                st.warning(
+                    "Verifica que Ollama/LM Studio este corriendo y que la URL sea correcta.\n\n"
+                    f"URL configurada: `{LLM_BASE_URL}`"
+                )
+
+    with col_test:
+        st.markdown("### Probar Modelo")
+
+        info = st.session_state.get("_modelos_info")
+        modelos_disponibles = info["modelos"] if info and info["conectado"] else []
+
+        if not modelos_disponibles:
+            st.caption("Primero detecta los modelos disponibles.")
+        else:
+            modelo_test = st.selectbox(
+                "Modelo a probar:",
+                modelos_disponibles,
+                key="_select_test_modelo",
+            )
+
+            if st.button(f"Probar {modelo_test}", use_container_width=True,
+                          icon=":material/play_arrow:"):
+                with st.spinner(f"Probando {modelo_test}..."):
+                    test_result = run_probar_modelo(modelo_test)
+                    st.session_state["_test_result"] = test_result
+
+            test_result = st.session_state.get("_test_result")
+            if test_result:
+                if test_result["ok"]:
+                    st.success(f"**{test_result['modelo']}** respondio en {test_result['tiempo_seg']}s")
+                    st.markdown(f"> {test_result['respuesta']}")
+                else:
+                    st.error(f"**{test_result['modelo']}** fallo: {test_result['error']}")
+                st.metric("Tiempo de respuesta", f"{test_result['tiempo_seg']}s")
 
 else:
     # ── Vista de Agente ────────────────────────────────────────────────

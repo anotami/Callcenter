@@ -9,8 +9,8 @@ import re
 import time
 import logging
 from openai import OpenAI
+import config as _cfg
 from config import (
-    LLM_BASE_URL, LLM_MODEL, LLM_API_KEY,
     LLM_FALLBACK_MODELS, LLM_MAX_RETRIES,
     GROQ_API_KEY, GROQ_BASE_URL, GROQ_FALLBACK_MODELS,
 )
@@ -21,9 +21,11 @@ logger = logging.getLogger("callcenter.analyzer")
 RETRY_DELAY_SECONDS = 2
 
 
-def create_llm_client(base_url: str = LLM_BASE_URL,
-                      api_key: str = LLM_API_KEY) -> OpenAI:
+def create_llm_client(base_url: str | None = None,
+                      api_key: str | None = None) -> OpenAI:
     """Crea cliente OpenAI apuntando a Groq, LM Studio, Ollama, etc."""
+    base_url = base_url or _cfg.LLM_BASE_URL
+    api_key = api_key or _cfg.LLM_API_KEY
     client = OpenAI(
         base_url=base_url,
         api_key=api_key,
@@ -39,11 +41,11 @@ def _get_model_queue() -> list[tuple[str, str, str]]:
     """
     entries: list[tuple[str, str, str]] = []
 
-    # Modelo principal + fallbacks locales
-    entries.append((LLM_MODEL, LLM_BASE_URL, LLM_API_KEY))
+    # Modelo principal (leido en runtime para reflejar seleccion del usuario)
+    entries.append((_cfg.LLM_MODEL, _cfg.LLM_BASE_URL, _cfg.LLM_API_KEY))
     for m in LLM_FALLBACK_MODELS:
-        if m != LLM_MODEL:
-            entries.append((m, LLM_BASE_URL, LLM_API_KEY))
+        if m != _cfg.LLM_MODEL:
+            entries.append((m, _cfg.LLM_BASE_URL, _cfg.LLM_API_KEY))
 
     # Modelos Groq (solo si hay API key)
     if GROQ_API_KEY:
@@ -90,7 +92,7 @@ def call_llm(
     # Cache de clientes por base_url para no recrearlos
     _clients: dict[str, OpenAI] = {}
     if client is not None:
-        _clients[LLM_BASE_URL] = client
+        _clients[_cfg.LLM_BASE_URL] = client
 
     last_error = None
     for attempt in range(1, max_retries + 1):

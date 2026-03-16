@@ -210,6 +210,71 @@ def _llm_analyze(prompt: str, system: str = "") -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  MODELOS - Deteccion y prueba de modelos LLM
+# ══════════════════════════════════════════════════════════════════════
+
+
+def run_listar_modelos() -> dict:
+    """Conecta al servidor LLM y lista los modelos disponibles."""
+    from openai import OpenAI
+    from config import LLM_BASE_URL, LLM_API_KEY
+
+    try:
+        client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
+        models_response = client.models.list()
+        modelos = [m.id for m in models_response.data]
+        return {
+            "servidor": LLM_BASE_URL,
+            "conectado": True,
+            "modelos": modelos,
+            "total": len(modelos),
+        }
+    except Exception as e:
+        return {
+            "servidor": LLM_BASE_URL,
+            "conectado": False,
+            "error": str(e),
+            "modelos": [],
+            "total": 0,
+        }
+
+
+def run_probar_modelo(modelo: str) -> dict:
+    """Prueba un modelo especifico enviandole un mensaje simple."""
+    from openai import OpenAI
+    from config import LLM_BASE_URL, LLM_API_KEY
+    import time
+
+    client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
+    start = time.time()
+    try:
+        response = client.chat.completions.create(
+            model=modelo,
+            messages=[
+                {"role": "system", "content": "Responde en una sola linea corta."},
+                {"role": "user", "content": "Di 'Modelo listo' y tu nombre de modelo."},
+            ],
+            temperature=0.1,
+            max_tokens=50,
+        )
+        elapsed = round(time.time() - start, 2)
+        return {
+            "modelo": modelo,
+            "ok": True,
+            "respuesta": response.choices[0].message.content,
+            "tiempo_seg": elapsed,
+        }
+    except Exception as e:
+        elapsed = round(time.time() - start, 2)
+        return {
+            "modelo": modelo,
+            "ok": False,
+            "error": str(e),
+            "tiempo_seg": elapsed,
+        }
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  CORTEX - Runners de Datos
 # ══════════════════════════════════════════════════════════════════════
 
