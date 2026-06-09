@@ -1,0 +1,1799 @@
+"""
+Streamlit UI - Equipo de Agentes de Call Center
+MODELOS | CORTEX | NEXUS | SENTINEL | LEDGER | ATLAS
+"""
+
+import streamlit as st
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from agents_config import get_all_agents, get_skill
+from agent_runner import (
+    execute_skill, load_all_results, RESULTS_DIR,
+    run_listar_modelos, run_probar_modelo, save_env_config, load_env_values,
+    get_last_chart_figures,
+)
+from prompt_manager import (
+    get_current_prompt, get_prompt_versions, get_active_version,
+    save_prompt, activate_version, load_prompt_version, DEFAULT_PROMPTS,
+)
+from pipeline_runner import get_all_pipelines, execute_pipeline
+
+# ── Config ─────────────────────────────────────────────────────────────
+
+st.set_page_config(
+    page_title="CallCenter AI Team",
+    layout="wide",
+    page_icon=":headphones:",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown("""
+<style>
+    .agent-role { font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+    #MainMenu {visibility: hidden;}
+
+    /* Forzar sidebar siempre visible */
+    [data-testid="stSidebar"] {
+        display: block !important;
+        visibility: visible !important;
+        position: relative !important;
+        width: 21rem !important;
+        min-width: 21rem !important;
+        transform: none !important;
+        z-index: 999;
+    }
+    [data-testid="stSidebar"] > div:first-child {
+        width: 21rem !important;
+        min-width: 21rem !important;
+    }
+    /* Ocultar boton de colapsar ya que siempre esta visible */
+    [data-testid="collapsedControl"] { display: none !important; }
+    button[kind="headerNoPadding"] { display: none !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Estado ─────────────────────────────────────────────────────────────
+
+if "selected_agent" not in st.session_state:
+    st.session_state.selected_agent = None
+if "selected_skill" not in st.session_state:
+    st.session_state.selected_skill = None
+if "execution_result" not in st.session_state:
+    st.session_state.execution_result = None
+if "selected_model" not in st.session_state:
+    from config import LLM_MODEL
+    st.session_state.selected_model = LLM_MODEL
+
+AGENTS = get_all_agents()
+
+AGENT_ICONS = {
+    "modelos": ":material/memory:",
+    "cortex": ":material/database:",
+    "nexus": ":material/calculate:",
+    "sentinel": ":material/verified_user:",
+    "ledger": ":material/payments:",
+    "atlas": ":material/analytics:",
+}
+
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".wma"}
+
+_SEMAFORO = {"verde": ":green_circle:", "amarillo": ":yellow_circle:", "rojo": ":red_circle:"}
+
+
+def _render_charts(figures: list, result_meta: dict | None = None):
+    """Renderiza graficos Plotly interactivos con opcion de exportar a PDF/PNG."""
+    if not figures:
+        return
+
+    st.markdown("#### Graficos Interactivos")
+
+    for i, fig in enumerate(figures):
+        st.plotly_chart(fig, use_container_width=True, key=f"chart_{i}_{id(fig)}")
+
+    # ── Botones de exportacion ──
+    st.markdown("---")
+    export_cols = st.columns(3)
+    agent_name = result_meta.get("agent_name", "reporte") if result_meta else "reporte"
+
+    with export_cols[0]:
+        from chart_builder import export_charts_to_pdf
+        title = "Reporte de Graficos"
+        if result_meta:
+            title = f"Reporte {result_meta.get('agent_name', '')} - {result_meta.get('skill_name', '')}"
+        pdf_bytes = export_charts_to_pdf(figures, title, result_meta)
+        if pdf_bytes:
+            # Detectar si es HTML o PDF nativo
+            is_html = pdf_bytes[:15].startswith(b"<!DOCTYPE") or pdf_bytes[:5].startswith(b"<html")
+            st.download_button(
+                label="Descargar PDF" if not is_html else "Descargar HTML (imprimir a PDF)",
+                data=pdf_bytes,
+                file_name=f"graficos_{agent_name}.pdf" if not is_html else f"graficos_{agent_name}.html",
+                mime="application/pdf" if not is_html else "text/html",
+                key="download_pdf",
+                type="primary",
+            )
+
+    with export_cols[1]:
+        from chart_builder import figures_to_png_zip
+        zip_bytes = figures_to_png_zip(figures)
+        if zip_bytes:
+            st.download_button(
+                label="Descargar Graficos (ZIP)",
+                data=zip_bytes,
+                file_name=f"graficos_{agent_name}.zip",
+                mime="application/zip",
+                key="download_zip",
+            )
+
+    with export_cols[2]:
+        st.metric("Total Graficos", len(figures))
+
+
+def _render_auto_charts(data: dict, result_meta: dict | None = None):
+    """Genera y renderiza graficos automaticos a partir de un resultado."""
+    from chart_builder import auto_charts_from_result
+    figures = auto_charts_from_result(data)
+    if figures:
+        _render_charts(figures, result_meta)
+    return len(figures)
+
+
+def _render_atlas_report(data: dict):
+    """Renderiza informes de ATLAS con dashboard, modulos, conclusiones y fuentes."""
+    import pandas as pd
+
+    # ── Dashboard ejecutivo (Informe Consolidado 360) ──
+    dash = data.get("dashboard_ejecutivo")
+    if dash:
+        st.markdown("#### Dashboard Ejecutivo")
+        dc1, dc2 = st.columns(2)
+        estado = dash.get("estado_general", "?")
+        dc1.metric("Estado General", f"{_SEMAFORO.get(estado, '')} {estado.upper()}")
+        dc2.metric("Score Operacion", f"{dash.get('score_operacion', 'N/A')}/100")
+        kpis_dash = dash.get("kpis_principales", [])
+        if kpis_dash:
+            st.dataframe(pd.DataFrame(kpis_dash), use_container_width=True)
+        st.markdown("---")
+
+    # ── Dashboard KPIs (WBR/MBR) ──
+    kpis_list = data.get("dashboard_kpis")
+    if kpis_list and isinstance(kpis_list, list):
+        st.markdown("#### Dashboard de KPIs")
+        for kpi in kpis_list:
+            sem = _SEMAFORO.get(kpi.get("semaforo", ""), "")
+            fuente = kpi.get("fuente", "")
+            val = kpi.get("valor", "?")
+            tgt = kpi.get("target", "?")
+            st.markdown(f"- {sem} **{kpi.get('kpi', '?')}**: {val} (target: {tgt}) — _{fuente}_")
+        st.markdown("---")
+
+    # ── Resumen ejecutivo ──
+    resumen = data.get("resumen_ejecutivo")
+    if resumen:
+        st.markdown("#### Resumen Ejecutivo")
+        st.info(resumen)
+
+    # ── Informes por modulo (formato lista — informe_por_modulo skill) ──
+    informes_lista = data.get("informes")
+    if informes_lista and isinstance(informes_lista, list):
+        st.markdown("#### Informes por Modulo")
+        for inf in informes_lista:
+            modulo = inf.get("modulo", "?")
+            agente = inf.get("agente_responsable", "")
+            estado = inf.get("estado_general", "?")
+            sem = _SEMAFORO.get(estado, "")
+            with st.expander(f"{sem} {modulo} ({agente}) — Estado: {estado.upper()}"):
+                if inf.get("resumen"):
+                    st.markdown(f"**Resumen:** {inf['resumen']}")
+                kpis = inf.get("kpis", [])
+                if kpis:
+                    st.markdown("**KPIs:**")
+                    st.dataframe(pd.DataFrame(kpis), use_container_width=True)
+                for section, label in [("hallazgos", "Hallazgos"), ("alertas", "Alertas"),
+                                        ("fortalezas", "Fortalezas"), ("oportunidades_mejora", "Oportunidades de Mejora"),
+                                        ("recomendaciones", "Recomendaciones")]:
+                    items = inf.get(section, [])
+                    if items:
+                        st.markdown(f"**{label}:**")
+                        for item in items:
+                            if isinstance(item, dict):
+                                txt = item.get("hallazgo", item.get("texto", str(item)))
+                                fuente = item.get("fuente", "")
+                                st.markdown(f"- {txt}" + (f" — _{fuente}_" if fuente else ""))
+                            else:
+                                st.markdown(f"- {item}")
+
+    # ── Informes por modulo (formato dict — WBR/MBR/Consolidado) ──
+    informe_dict = data.get("informe_por_modulo")
+    if informe_dict and isinstance(informe_dict, dict):
+        st.markdown("#### Informes por Modulo")
+        for mod_key, mod_data in informe_dict.items():
+            if not isinstance(mod_data, dict):
+                continue
+            titulo = mod_data.get("titulo", mod_key.upper())
+            estado = mod_data.get("estado", mod_data.get("estado_general", "?"))
+            sem = _SEMAFORO.get(estado, "")
+            with st.expander(f"{sem} {titulo} — Estado: {estado.upper()}"):
+                if mod_data.get("analisis"):
+                    st.markdown(f"**Analisis:** {mod_data['analisis']}")
+                if mod_data.get("resumen"):
+                    st.markdown(f"**Resumen:** {mod_data['resumen']}")
+                kpis = mod_data.get("kpis", [])
+                if kpis:
+                    st.markdown("**KPIs:**")
+                    st.dataframe(pd.DataFrame(kpis), use_container_width=True)
+                for section, label in [("hallazgos", "Hallazgos"), ("alertas", "Alertas"),
+                                        ("recomendaciones", "Recomendaciones")]:
+                    items = mod_data.get(section, [])
+                    if items:
+                        st.markdown(f"**{label}:**")
+                        for item in items:
+                            if isinstance(item, dict):
+                                st.markdown(f"- {item}")
+                            else:
+                                st.markdown(f"- {item}")
+
+    # ── Analisis cruzado (Consolidado) ──
+    cruzado = data.get("analisis_cruzado")
+    if cruzado and isinstance(cruzado, dict):
+        st.markdown("---")
+        st.markdown("#### Analisis Cruzado entre Modulos")
+        for section, label in [("correlaciones", "Correlaciones"), ("dependencias", "Dependencias"),
+                                ("cuellos_botella", "Cuellos de Botella")]:
+            items = cruzado.get(section, [])
+            if items:
+                st.markdown(f"**{label}:**")
+                for item in items:
+                    st.markdown(f"- {item}" if isinstance(item, str) else f"- {item}")
+
+    # ── Conclusiones ──
+    conclusiones = data.get("conclusiones")
+    if conclusiones:
+        st.markdown("---")
+        st.markdown("#### Conclusiones")
+        for c in conclusiones:
+            if isinstance(c, dict):
+                impacto = c.get("impacto", "")
+                badge = f" **[{impacto.upper()}]**" if impacto else ""
+                mods = ", ".join(c.get("modulos_relacionados", []))
+                fuentes = c.get("fuentes", "")
+                st.markdown(f"- {c.get('conclusion', str(c))}{badge}" +
+                            (f" ({mods})" if mods else "") +
+                            (f" — _{fuentes}_" if fuentes else ""))
+            else:
+                st.markdown(f"- {c}")
+
+    # ── Riesgos ──
+    riesgos = data.get("riesgos") or data.get("top_3_riesgos")
+    if riesgos:
+        st.markdown("---")
+        st.markdown("#### Riesgos")
+        for r in riesgos:
+            if isinstance(r, dict):
+                st.markdown(
+                    f"- **{r.get('riesgo', '?')}** — "
+                    f"Mitigacion: {r.get('mitigacion', 'N/A')}"
+                    + (f" — _{r.get('fuente', '')}_" if r.get("fuente") else "")
+                )
+            else:
+                st.markdown(f"- {r}")
+
+    # ── Plan de accion ──
+    plan = data.get("plan_accion")
+    if plan:
+        st.markdown("---")
+        st.markdown("#### Plan de Accion")
+        st.dataframe(pd.DataFrame(plan), use_container_width=True)
+
+    # ── Forecast ──
+    forecast = data.get("forecast") or data.get("forecast_proximo_mes") or data.get("outlook_proxima_semana")
+    if forecast:
+        st.markdown("---")
+        st.markdown("#### Proyeccion / Outlook")
+        st.info(forecast if isinstance(forecast, str) else json.dumps(forecast, ensure_ascii=False))
+
+    # ── Fuentes utilizadas ──
+    fuentes = data.get("fuentes_utilizadas")
+    if fuentes:
+        st.markdown("---")
+        with st.expander("Fuentes de datos utilizadas"):
+            st.dataframe(pd.DataFrame(fuentes), use_container_width=True)
+
+    # ── Nota metodologica ──
+    nota = data.get("nota_metodologica")
+    if nota:
+        st.caption(f"Nota metodologica: {nota}")
+
+
+# ── Sidebar ────────────────────────────────────────────────────────────
+
+with st.sidebar:
+    st.markdown("### Equipo de Agentes")
+    st.caption("Selecciona un agente para ver sus habilidades")
+    st.divider()
+
+    for agent_id, agent in AGENTS.items():
+        icon = AGENT_ICONS.get(agent_id, ":material/smart_toy:")
+        is_selected = st.session_state.selected_agent == agent_id
+
+        if st.button(
+            f"{agent['nombre']} — {agent['rol']}",
+            key=f"agent_{agent_id}",
+            use_container_width=True,
+            icon=icon,
+            type="primary" if is_selected else "secondary",
+        ):
+            st.session_state.selected_agent = agent_id
+            st.session_state.selected_skill = None
+            st.session_state.execution_result = None
+            st.rerun()
+
+    # Historial rapido
+    st.divider()
+    st.markdown("### Historial Reciente")
+    all_results = load_all_results()
+    if all_results:
+        # Filtro por agente
+        agent_names = sorted(set(r.get("agent_name", "?") for r in all_results))
+        hist_filter = st.selectbox(
+            "Filtrar por agente",
+            ["Todos"] + agent_names,
+            key="_hist_filter",
+            label_visibility="collapsed",
+        )
+        filtered = all_results if hist_filter == "Todos" else [
+            r for r in all_results if r.get("agent_name") == hist_filter
+        ]
+        for r in filtered[:15]:
+            res_data = r.get("resultado", {})
+            has_error = isinstance(res_data, dict) and "error" in res_data
+            icon = ":red_circle:" if has_error else ":green_circle:"
+            st.caption(
+                f"{icon} {r.get('agent_name', '?')} / {r.get('skill_name', '?')} "
+                f"v{r.get('version', 1)} - {r.get('fecha', '')} {r.get('hora', '')[:5]}"
+            )
+    else:
+        st.caption("Sin resultados aun.")
+
+# ── Panel Principal ────────────────────────────────────────────────────
+
+if st.session_state.selected_agent is None:
+    from datetime import datetime, date
+
+    st.markdown("# CallCenter AI Team")
+    st.markdown("### Ciclo WFM Mensual")
+
+    # ── Estado del ciclo mensual ──────────────────────────────────────
+    hoy = date.today()
+    mes_actual = hoy.strftime("%Y-%m")
+    dia_mes = hoy.day
+    nombre_mes = hoy.strftime("%B %Y").capitalize()
+
+    resultados_mes = [r for r in all_results if r.get("fecha", "").startswith(mes_actual)]
+    skills_completadas = set(r.get("skill_id") for r in resultados_mes if r.get("resultado", {}) and "error" not in r.get("resultado", {}))
+
+    fase_1_skills = {"ingesta_cubo_trafico", "ingesta_acd", "pronostico_erlang"}
+    fase_2_skills = {"planificacion_proveedor"}
+    fase_3_skills = {"ingesta_malla", "programacion_turnos"}
+    fase_4_skills = {"ingesta_gtr", "analisis_gtr", "calcular_cop_cor", "calcular_facturacion", "informe_consolidado"}
+
+    def _fase_status(skills_fase):
+        done = skills_fase & skills_completadas
+        if len(done) == len(skills_fase):
+            return "complete", len(done), len(skills_fase)
+        elif len(done) > 0:
+            return "partial", len(done), len(skills_fase)
+        return "pending", 0, len(skills_fase)
+
+    f1_st, f1_done, f1_total = _fase_status(fase_1_skills)
+    f2_st, f2_done, f2_total = _fase_status(fase_2_skills)
+    f3_st, f3_done, f3_total = _fase_status(fase_3_skills)
+    f4_st, f4_done, f4_total = _fase_status(fase_4_skills)
+
+    _status_icon = {"complete": ":white_check_mark:", "partial": ":hourglass_flowing_sand:", "pending": ":white_large_square:"}
+    _status_color = {"complete": "green", "partial": "orange", "pending": "gray"}
+
+    total_done = f1_done + f2_done + f3_done + f4_done
+    total_all = f1_total + f2_total + f3_total + f4_total
+    pct = int(total_done / total_all * 100) if total_all > 0 else 0
+
+    # Barra de progreso del mes
+    st.caption(f"Mes: **{nombre_mes}** | Dia {dia_mes} | Progreso del ciclo:")
+    st.progress(pct / 100, text=f"{pct}% completado ({total_done}/{total_all} pasos)")
+
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric(f"{_status_icon[f1_st]} Fase 1", f"{f1_done}/{f1_total}", "Pronostico")
+    mc2.metric(f"{_status_icon[f2_st]} Fase 2", f"{f2_done}/{f2_total}", "Planificacion")
+    mc3.metric(f"{_status_icon[f3_st]} Fase 3", f"{f3_done}/{f3_total}", "Programacion")
+    mc4.metric(f"{_status_icon[f4_st]} Fase 4", f"{f4_done}/{f4_total}", "Cierre")
+
+    st.markdown("---")
+
+    # ══════════════════════════════════════════════════════════════════
+    #  FASE 1: Pronostico (Dia 1-5)
+    # ══════════════════════════════════════════════════════════════════
+    with st.expander(
+        f"{_status_icon[f1_st]} **FASE 1 — Pronostico** (Dia 1-5) | "
+        f"Extraer datos de la central, analizar, pronosticar con Erlang C",
+        expanded=(f1_st != "complete"),
+    ):
+        st.markdown("""
+**Que hacer:** Extraer el Cubo de Trafico del mes anterior desde la central telefonica (INTEGRATEL),
+analizarlo y generar el pronostico de agentes requeridos con Erlang C.
+
+**Entregable:** OUTPUT I — Rac Requerido Disponible por intervalo (cuantos agentes necesitas).
+        """)
+
+        st.markdown("##### Paso 1: Cargar Cubo de Trafico")
+        f1_file = st.file_uploader(
+            "Cubo de Trafico o datos ACD (.csv, .xlsx)",
+            type=["csv", "xlsx", "xls"],
+            key="fase1_upload",
+            help="Exporta el reporte de trafico de tu central telefonica con columnas: fecha, intervalo, llamadas, tmo, nds",
+        )
+
+        st.markdown("##### Paso 2: Parametros del pronostico")
+        f1_col1, f1_col2, f1_col3 = st.columns(3)
+        with f1_col1:
+            f1_nds = st.number_input("Meta NdS (%)", value=80, min_value=50, max_value=99, key="f1_nds")
+        with f1_col2:
+            f1_tresp = st.number_input("Tiempo respuesta (seg)", value=20, min_value=5, max_value=60, key="f1_tresp")
+        with f1_col3:
+            f1_periodo = st.text_input("Periodo", value=nombre_mes, key="f1_periodo")
+
+        if "ingesta_cubo_trafico" in skills_completadas or "ingesta_acd" in skills_completadas:
+            st.success("Ingesta completada este mes")
+        if "pronostico_erlang" in skills_completadas:
+            st.success("Pronostico Erlang completado este mes")
+
+        if st.button(
+            "Ejecutar Fase 1: Pronostico",
+            disabled=(f1_file is None),
+            use_container_width=True,
+            type="primary",
+            key="exec_fase1",
+        ):
+            with st.status("Ejecutando Fase 1...", expanded=True) as f1_status:
+                f1_bytes = f1_file.read()
+                f1_name = f1_file.name
+
+                # Detectar si es cubo de trafico o ACD generico
+                is_cubo = any(x in f1_name.lower() for x in ("cubo", "trafico", "traffic"))
+                skill_ingesta = "ingesta_cubo_trafico" if is_cubo else "ingesta_acd"
+                nombre_ingesta = "Ingesta Cubo de Trafico" if is_cubo else "Ingesta de Datos ACD"
+
+                f1_status.update(label="Paso 1/2: Ingesta de datos...")
+                r_ingesta = execute_skill(
+                    agent_id="cortex", skill_id=skill_ingesta, skill_name=nombre_ingesta,
+                    file_bytes=f1_bytes, filename=f1_name,
+                    status_container=f1_status,
+                )
+                st.session_state["fase1_ingesta"] = r_ingesta
+
+                f1_status.update(label="Paso 2/2: Calculando pronostico Erlang C...")
+                texto_erlang = f"NdS objetivo: {f1_nds}%, Tiempo respuesta: {f1_tresp}s, Periodo: {f1_periodo}"
+                r_erlang = execute_skill(
+                    agent_id="nexus", skill_id="pronostico_erlang", skill_name="Pronostico Erlang C",
+                    file_bytes=f1_bytes, filename=f1_name,
+                    texto=texto_erlang,
+                    resultados_multiples=[r_ingesta],
+                    status_container=f1_status,
+                )
+                st.session_state["fase1_erlang"] = r_erlang
+
+                has_err = isinstance(r_erlang.get("resultado", {}), dict) and "error" in r_erlang.get("resultado", {})
+                if has_err:
+                    f1_status.update(label="Fase 1 completada con errores", state="error")
+                else:
+                    f1_status.update(label="Fase 1 completada: OUTPUT I generado", state="complete")
+
+        # Mostrar resultados de fase 1
+        f1_r = st.session_state.get("fase1_erlang")
+        if f1_r:
+            rd = f1_r.get("resultado", {})
+            if isinstance(rd, dict) and "error" not in rd:
+                st.markdown("##### OUTPUT I — Rac Requerido Disponible")
+                if isinstance(rd, dict):
+                    st.json(rd)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  FASE 2: Planificacion (Dia 6-12)
+    # ══════════════════════════════════════════════════════════════════
+    with st.expander(
+        f"{_status_icon[f2_st]} **FASE 2 — Planificacion** (Dia 6-12) | "
+        f"Aplicar reductores, dimensionar y enviar a proveedores",
+        expanded=(f1_st == "complete" and f2_st != "complete"),
+    ):
+        st.markdown("""
+**Que hacer:** Tomar el OUTPUT I y agregar el colchon operativo: +10% volumen, TMO forecast,
+shrinkage, ausentismo y rotacion. Enviar el requerimiento al proveedor.
+
+**Entregable:** OUTPUT II — Rac Planificado Disponible (cuantos agentes pedir al proveedor).
+        """)
+
+        st.markdown("##### Parametros de planificacion")
+        f2_col1, f2_col2, f2_col3, f2_col4 = st.columns(4)
+        with f2_col1:
+            f2_shrinkage = st.number_input("Shrinkage (%)", value=15, min_value=0, max_value=40, key="f2_shrink")
+        with f2_col2:
+            f2_ausentismo = st.number_input("Ausentismo (%)", value=8, min_value=0, max_value=30, key="f2_ausen")
+        with f2_col3:
+            f2_rotacion = st.number_input("Rotacion (%)", value=5, min_value=0, max_value=30, key="f2_rot")
+        with f2_col4:
+            f2_volumen_extra = st.number_input("Volumen extra (%)", value=10, min_value=0, max_value=50, key="f2_vol")
+
+        # Buscar OUTPUT I del mes
+        f1_results = [r for r in resultados_mes if r.get("skill_id") == "pronostico_erlang"]
+        if not f1_results:
+            f1_results_alt = [r for r in resultados_mes if r.get("skill_id") in ("ingesta_cubo_trafico", "ingesta_acd")]
+            if f1_results_alt:
+                st.warning("Hay datos de ingesta pero falta el pronostico Erlang (OUTPUT I). Ejecuta la Fase 1 primero.")
+            else:
+                st.info("Ejecuta la Fase 1 primero para generar el OUTPUT I.")
+
+        if "planificacion_proveedor" in skills_completadas:
+            st.success("Planificacion completada este mes")
+
+        if st.button(
+            "Ejecutar Fase 2: Planificacion",
+            disabled=(len(f1_results) == 0),
+            use_container_width=True,
+            type="primary",
+            key="exec_fase2",
+        ):
+            with st.status("Ejecutando Fase 2...", expanded=True) as f2_status:
+                texto_plan = (
+                    f"shrinkage: {f2_shrinkage}%, ausentismo: {f2_ausentismo}%, "
+                    f"rotacion: {f2_rotacion}%, volumen_extra: {f2_volumen_extra}%"
+                )
+                r_plan = execute_skill(
+                    agent_id="nexus", skill_id="planificacion_proveedor",
+                    skill_name="Planificacion Proveedor",
+                    texto=texto_plan,
+                    resultados_multiples=f1_results[:1],
+                    status_container=f2_status,
+                )
+                st.session_state["fase2_plan"] = r_plan
+
+                has_err = isinstance(r_plan.get("resultado", {}), dict) and "error" in r_plan.get("resultado", {})
+                if has_err:
+                    f2_status.update(label="Fase 2 completada con errores", state="error")
+                else:
+                    f2_status.update(label="Fase 2 completada: OUTPUT II generado", state="complete")
+
+        f2_r = st.session_state.get("fase2_plan")
+        if f2_r:
+            rd = f2_r.get("resultado", {})
+            if isinstance(rd, dict) and "error" not in rd:
+                st.markdown("##### OUTPUT II — Rac Planificado Disponible")
+                st.json(rd)
+                st.info("Descarga este resultado y envialo al proveedor como requerimiento de personal.")
+                json_export = json.dumps(rd, ensure_ascii=False, indent=2, default=str)
+                st.download_button(
+                    "Descargar requerimiento para proveedor",
+                    data=json_export,
+                    file_name=f"requerimiento_proveedor_{mes_actual}.json",
+                    mime="application/json",
+                    key="f2_download",
+                )
+
+    # ══════════════════════════════════════════════════════════════════
+    #  FASE 3: Programacion y Validacion (Dia 13-20)
+    # ══════════════════════════════════════════════════════════════════
+    with st.expander(
+        f"{_status_icon[f3_st]} **FASE 3 — Programacion** (Dia 13-20) | "
+        f"Recibir malla del proveedor, comparar contra requerido, alertas",
+        expanded=(f2_st == "complete" and f3_st != "complete"),
+    ):
+        st.markdown("""
+**Que hacer:** Recibir la Malla del Proveedor (programacion de turnos), cargarla y compararla
+contra el OUTPUT II. Identificar gaps y generar alertas.
+
+**Entregable:** OUTPUTs III, IV, V — Rac Programado (logueado, sin breaks, disponible).
+        """)
+
+        st.markdown("##### Paso 1: Cargar Malla del Proveedor")
+        f3_file = st.file_uploader(
+            "Malla del Proveedor (.csv, .xlsx)",
+            type=["csv", "xlsx", "xls"],
+            key="fase3_upload",
+            help="Archivo con la programacion de turnos que envia el proveedor",
+        )
+
+        st.markdown("##### Paso 2: Parametros de TNPs")
+        f3_col1, f3_col2, f3_col3 = st.columns(3)
+        with f3_col1:
+            f3_breaks = st.text_input("Breaks", value="2x15min", key="f3_breaks")
+        with f3_col2:
+            f3_coach = st.text_input("Coaching", value="30min/semana", key="f3_coach")
+        with f3_col3:
+            f3_capacitacion = st.text_input("Capacitacion", value="2hrs/mes", key="f3_cap")
+
+        # Buscar OUTPUTs previos
+        f2_results = [r for r in resultados_mes if r.get("skill_id") == "planificacion_proveedor"]
+        f1_r_list = [r for r in resultados_mes if r.get("skill_id") == "pronostico_erlang"]
+        previos_fase3 = f1_r_list[:1] + f2_results[:1]
+
+        if not f2_results:
+            st.info("Ejecuta la Fase 2 primero para generar el OUTPUT II.")
+
+        if "programacion_turnos" in skills_completadas:
+            st.success("Programacion completada este mes")
+
+        if st.button(
+            "Ejecutar Fase 3: Programacion",
+            disabled=(f3_file is None or len(f2_results) == 0),
+            use_container_width=True,
+            type="primary",
+            key="exec_fase3",
+        ):
+            with st.status("Ejecutando Fase 3...", expanded=True) as f3_status:
+                f3_bytes = f3_file.read()
+                f3_name = f3_file.name
+
+                f3_status.update(label="Paso 1/2: Ingesta de Malla...")
+                r_malla = execute_skill(
+                    agent_id="cortex", skill_id="ingesta_malla",
+                    skill_name="Ingesta Malla Proveedor",
+                    file_bytes=f3_bytes, filename=f3_name,
+                    status_container=f3_status,
+                )
+                st.session_state["fase3_malla"] = r_malla
+
+                f3_status.update(label="Paso 2/2: Calculando programacion y comparando...")
+                texto_prog = f"breaks: {f3_breaks}, coach: {f3_coach}, capacitacion: {f3_capacitacion}"
+                r_prog = execute_skill(
+                    agent_id="nexus", skill_id="programacion_turnos",
+                    skill_name="Programacion de Turnos",
+                    file_bytes=f3_bytes, filename=f3_name,
+                    texto=texto_prog,
+                    resultados_multiples=previos_fase3 + [r_malla],
+                    status_container=f3_status,
+                )
+                st.session_state["fase3_prog"] = r_prog
+
+                has_err = isinstance(r_prog.get("resultado", {}), dict) and "error" in r_prog.get("resultado", {})
+                if has_err:
+                    f3_status.update(label="Fase 3 completada con errores", state="error")
+                else:
+                    f3_status.update(label="Fase 3 completada: OUTPUTs III-V generados", state="complete")
+
+        f3_r = st.session_state.get("fase3_prog")
+        if f3_r:
+            rd = f3_r.get("resultado", {})
+            if isinstance(rd, dict) and "error" not in rd:
+                st.markdown("##### OUTPUTs III-IV-V — Programacion")
+                st.json(rd)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  FASE 4: Cierre y Facturacion (Dia 21-fin)
+    # ══════════════════════════════════════════════════════════════════
+    with st.expander(
+        f"{_status_icon[f4_st]} **FASE 4 — Cierre** (Dia 21-fin) | "
+        f"GTR real vs planificado, COP/COR, facturacion, reporte ejecutivo",
+        expanded=(f3_st == "complete" and f4_st != "complete"),
+    ):
+        st.markdown("""
+**Que hacer:** Cargar los datos GTR reales del mes, compararlos contra lo planificado,
+calcular COP/COR, facturar y generar el reporte ejecutivo.
+
+**Entregable:** OUTPUT VI (COP/COR) + Facturacion + Informe 360.
+        """)
+
+        st.markdown("##### Paso 1: Cargar datos GTR reales")
+        f4_file = st.file_uploader(
+            "Datos GTR reales (.csv, .xlsx)",
+            type=["csv", "xlsx", "xls"],
+            key="fase4_upload",
+            help="Datos reales del mes: agentes logueados, disponibles, llamadas atendidas, TMO real",
+        )
+
+        st.markdown("##### Paso 2: Parametros de facturacion")
+        f4_col1, f4_col2 = st.columns(2)
+        with f4_col1:
+            f4_tarifa = st.number_input("Tarifa por hora ($)", value=12.50, min_value=0.0, step=0.50, key="f4_tarifa")
+        with f4_col2:
+            f4_horas = st.number_input("Horas contratadas", value=1200, min_value=0, step=100, key="f4_horas")
+
+        # Buscar todos los OUTPUTs previos del mes
+        all_outputs_mes = [r for r in resultados_mes
+                          if r.get("skill_id") in ("pronostico_erlang", "planificacion_proveedor", "programacion_turnos")]
+
+        for skill_check in ("calcular_cop_cor", "calcular_facturacion", "informe_consolidado"):
+            if skill_check in skills_completadas:
+                st.success(f"{skill_check.replace('_', ' ').title()} completado este mes")
+
+        can_close = len(all_outputs_mes) > 0
+        if not can_close:
+            st.info("Ejecuta las fases anteriores primero. Necesitas al menos el OUTPUT I.")
+
+        if st.button(
+            "Ejecutar Fase 4: Cierre completo",
+            disabled=(not can_close),
+            use_container_width=True,
+            type="primary",
+            key="exec_fase4",
+        ):
+            with st.status("Ejecutando Fase 4...", expanded=True) as f4_status:
+                f4_bytes = f4_file.read() if f4_file else None
+                f4_name = f4_file.name if f4_file else ""
+
+                paso_actual = 1
+                total_pasos = 4 if f4_bytes else 3
+
+                # GTR (solo si hay archivo)
+                if f4_bytes:
+                    f4_status.update(label=f"Paso {paso_actual}/{total_pasos}: Ingesta GTR...")
+                    r_gtr = execute_skill(
+                        agent_id="cortex", skill_id="ingesta_gtr",
+                        skill_name="Ingesta GTR",
+                        file_bytes=f4_bytes, filename=f4_name,
+                        status_container=f4_status,
+                    )
+                    all_outputs_mes.append(r_gtr)
+                    paso_actual += 1
+
+                # COP/COR
+                f4_status.update(label=f"Paso {paso_actual}/{total_pasos}: Calculando COP/COR...")
+                r_cop = execute_skill(
+                    agent_id="nexus", skill_id="calcular_cop_cor",
+                    skill_name="Calcular COP/COR",
+                    file_bytes=f4_bytes, filename=f4_name,
+                    resultados_multiples=all_outputs_mes,
+                    status_container=f4_status,
+                )
+                st.session_state["fase4_cop"] = r_cop
+                paso_actual += 1
+
+                # Facturacion
+                f4_status.update(label=f"Paso {paso_actual}/{total_pasos}: Facturacion...")
+                texto_fact = f"tarifa_hora: {f4_tarifa}, horas_contratadas: {f4_horas}, periodo: {nombre_mes}"
+                r_fact = execute_skill(
+                    agent_id="ledger", skill_id="calcular_facturacion",
+                    skill_name="Calcular Facturacion",
+                    texto=texto_fact,
+                    resultados_multiples=all_outputs_mes + [r_cop],
+                    status_container=f4_status,
+                )
+                st.session_state["fase4_fact"] = r_fact
+                paso_actual += 1
+
+                # Informe consolidado
+                f4_status.update(label=f"Paso {paso_actual}/{total_pasos}: Generando informe 360...")
+                r_informe = execute_skill(
+                    agent_id="atlas", skill_id="informe_consolidado",
+                    skill_name="Informe Consolidado 360",
+                    texto=f"Periodo: {nombre_mes}, Cierre mensual WFM",
+                    resultados_multiples=all_outputs_mes + [r_cop, r_fact],
+                    status_container=f4_status,
+                )
+                st.session_state["fase4_informe"] = r_informe
+
+                has_err = isinstance(r_informe.get("resultado", {}), dict) and "error" in r_informe.get("resultado", {})
+                if has_err:
+                    f4_status.update(label="Fase 4 completada con errores", state="error")
+                else:
+                    f4_status.update(label="Fase 4 completada: Cierre mensual generado", state="complete")
+
+        # Mostrar resultados de fase 4
+        f4_informe = st.session_state.get("fase4_informe")
+        if f4_informe:
+            rd = f4_informe.get("resultado", {})
+            if isinstance(rd, dict) and "error" not in rd:
+                st.markdown("##### Informe de Cierre Mensual")
+                if rd.get("dashboard_ejecutivo") or rd.get("dashboard_kpis") or rd.get("informe_por_modulo"):
+                    _render_atlas_report(rd)
+                else:
+                    st.json(rd)
+
+                json_export = json.dumps(rd, ensure_ascii=False, indent=2, default=str)
+                st.download_button(
+                    "Descargar Informe de Cierre",
+                    data=json_export,
+                    file_name=f"cierre_wfm_{mes_actual}.json",
+                    mime="application/json",
+                    key="f4_download",
+                )
+
+    # ══════════════════════════════════════════════════════════════════
+    #  PIPELINES EXPRESS (Otros flujos rapidos)
+    # ══════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### Otros Pipelines Express")
+    st.caption("Flujos adicionales para situaciones especificas.")
+
+    pipelines = get_all_pipelines()
+    pip_cols = st.columns(3)
+    for i, (pip_id, pip) in enumerate(pipelines.items()):
+        with pip_cols[i % 3]:
+            with st.container(border=True):
+                st.markdown(f"**{pip.get('icono', '')} {pip['nombre']}**")
+                st.caption(pip["descripcion"])
+                st.caption(f"{len(pip['pasos'])} pasos automaticos")
+
+                if st.button(
+                    f"Abrir",
+                    key=f"pip_open_{pip_id}",
+                    use_container_width=True,
+                ):
+                    st.session_state["_active_pipeline"] = pip_id
+                    st.rerun()
+
+    # ── Pipeline Execution Panel ──────────────────────────────────────
+    active_pip_id = st.session_state.get("_active_pipeline")
+    if active_pip_id and active_pip_id in pipelines:
+        pip = pipelines[active_pip_id]
+        st.markdown("---")
+        st.markdown(f"### {pip.get('icono', '')} {pip['nombre']}")
+        st.markdown(pip["descripcion"])
+
+        st.markdown("**Pasos del pipeline:**")
+        for j, paso in enumerate(pip["pasos"]):
+            st.markdown(f"{j+1}. **{paso['agent_id'].upper()}** → {paso['skill_name']}")
+
+        st.markdown("---")
+
+        pip_file = None
+        pip_texto = ""
+
+        if pip.get("requiere_archivo"):
+            exts = pip.get("extensiones", [])
+            pip_file = st.file_uploader(
+                f"Archivo ({', '.join(exts)})",
+                type=[e.lstrip(".") for e in exts],
+                key=f"pip_upload_{active_pip_id}",
+            )
+
+        if pip.get("acepta_texto"):
+            pip_texto = st.text_area(
+                "Contexto / Parametros",
+                height=100,
+                placeholder=pip.get("texto_placeholder", "Contexto adicional..."),
+                key=f"pip_texto_{active_pip_id}",
+            )
+
+        col_exec_pip, col_cancel_pip = st.columns(2)
+        with col_exec_pip:
+            can_run = pip_file is not None or not pip.get("requiere_archivo")
+            if st.button(
+                f"Ejecutar Pipeline: {pip['nombre']}",
+                disabled=not can_run,
+                use_container_width=True,
+                type="primary",
+                key=f"pip_exec_{active_pip_id}",
+            ):
+                with st.status(
+                    f"Ejecutando {pip['nombre']}...",
+                    expanded=True,
+                ) as pip_status:
+                    file_bytes = pip_file.read() if pip_file else None
+                    filename = pip_file.name if pip_file else ""
+
+                    def status_cb(step_i, total, desc, state):
+                        try:
+                            pip_status.update(label=desc, state="running" if state == "running" else state)
+                        except Exception:
+                            pass
+
+                    pip_result = execute_pipeline(
+                        pipeline_id=active_pip_id,
+                        file_bytes=file_bytes,
+                        filename=filename,
+                        texto=pip_texto,
+                        status_callback=status_cb,
+                    )
+
+                    st.session_state["_pipeline_result"] = pip_result
+                    errors = pip_result.get("errores", [])
+                    if errors:
+                        pip_status.update(
+                            label=f"Pipeline completado con {len(errors)} error(es)",
+                            state="error",
+                        )
+                    else:
+                        pip_status.update(
+                            label=f"Pipeline completado: {pip_result.get('pasos_completados')}/{pip_result.get('total_pasos')} pasos",
+                            state="complete",
+                        )
+
+        with col_cancel_pip:
+            if st.button("Cerrar Pipeline", use_container_width=True, key=f"pip_close_{active_pip_id}"):
+                st.session_state.pop("_active_pipeline", None)
+                st.session_state.pop("_pipeline_result", None)
+                st.rerun()
+
+        pip_result = st.session_state.get("_pipeline_result")
+        if pip_result:
+            st.markdown("---")
+            st.markdown("### Resultado del Pipeline")
+
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("Pasos Completados", f"{pip_result.get('pasos_completados', 0)}/{pip_result.get('total_pasos', 0)}")
+            mc2.metric("Errores", len(pip_result.get("errores", [])))
+            mc3.metric("Pipeline", pip_result.get("pipeline_nombre", ""))
+
+            resultados = pip_result.get("resultados", [])
+            pasos = pip["pasos"]
+            for j, (paso, res) in enumerate(zip(pasos, resultados)):
+                res_data = res.get("resultado", {})
+                has_error = isinstance(res_data, dict) and "error" in res_data
+                icon = ":red_circle:" if has_error else ":green_circle:"
+                with st.expander(f"{icon} Paso {j+1}: {paso['skill_name']} ({paso['agent_id'].upper()})"):
+                    if has_error:
+                        st.error(res_data["error"])
+                    elif isinstance(res_data, dict):
+                        st.json(res_data)
+                    else:
+                        st.write(res_data)
+
+            final = pip_result.get("resultado_final")
+            if final:
+                st.markdown("---")
+                st.markdown("### Resultado Final")
+                final_data = final.get("resultado", {})
+                if isinstance(final_data, dict) and not final_data.get("error"):
+                    if final_data.get("dashboard_ejecutivo") or final_data.get("dashboard_kpis") or final_data.get("informe_por_modulo") or final_data.get("informes"):
+                        _render_atlas_report(final_data)
+                    else:
+                        st.json(final_data)
+
+                    json_export = json.dumps(final_data, ensure_ascii=False, indent=2, default=str)
+                    st.download_button(
+                        "Descargar JSON",
+                        data=json_export,
+                        file_name=f"pipeline_{active_pip_id}_{final.get('fecha', '')}.json",
+                        mime="application/json",
+                        key="pip_download_json",
+                    )
+
+    st.markdown("---")
+
+    # ── Agentes ──────────────────────────────────────────────────────
+    st.markdown("### Agentes del Equipo")
+    operational_agents = {k: v for k, v in AGENTS.items() if k != "modelos"}
+    cols = st.columns(len(operational_agents))
+    for i, (agent_id, agent) in enumerate(operational_agents.items()):
+        with cols[i]:
+            st.markdown(f"#### {agent['nombre']}")
+            st.markdown(f'<span class="agent-role">{agent["rol"]}</span>', unsafe_allow_html=True)
+            st.markdown(agent["descripcion"][:120] + "...")
+            st.metric("Habilidades", len(agent["habilidades"]))
+
+    st.markdown("---")
+    st.info("Selecciona un agente en el panel lateral para ejecutar habilidades individuales.")
+
+    if all_results:
+        st.markdown("### Actividad del Equipo")
+        ca, cb, cc = st.columns(3)
+        ca.metric("Total Tareas", len(all_results))
+        cb.metric("Agentes Activos", len(set(r.get("agent_id") for r in all_results)))
+        cc.metric("Dias con Actividad", len(set(r.get("fecha") for r in all_results)))
+
+elif st.session_state.selected_agent == "modelos":
+    # ── Vista especial: MODELOS ────────────────────────────────────────
+    agent = AGENTS["modelos"]
+    st.markdown(f"# {agent['nombre']}")
+    st.markdown(f'<span class="agent-role">{agent["rol"]}</span>', unsafe_allow_html=True)
+    st.markdown(agent["descripcion"])
+    st.markdown("---")
+
+    import config as _cfg
+
+    # ── Proveedor ─────────────────────────────────────────────────────
+    PROVEEDORES = {
+        "Ollama (Local)": {
+            "url": "http://localhost:11434/v1",
+            "api_key": "not-needed",
+            "necesita_key": False,
+            "modelo_sugerido": "llama3.2:3b",
+            "modelos_ejemplo": ["llama3.2:3b", "llama3.1:8b", "mistral:7b", "qwen2.5:7b"],
+            "pasos": (
+                "**Pasos para configurar Ollama:**\n"
+                "1. Instalar Ollama: `curl -fsSL https://ollama.ai/install.sh | sh`\n"
+                "2. Descargar un modelo: `ollama pull llama3.2:3b`\n"
+                "3. Ollama inicia automaticamente en `http://localhost:11434`\n"
+                "4. Presiona **Guardar** y luego **Detectar Modelos**"
+            ),
+        },
+        "LM Studio (Local)": {
+            "url": "http://localhost:1234/v1",
+            "api_key": "not-needed",
+            "necesita_key": False,
+            "modelo_sugerido": "",
+            "modelos_ejemplo": [],
+            "pasos": (
+                "**Pasos para configurar LM Studio:**\n"
+                "1. Descargar LM Studio desde https://lmstudio.ai\n"
+                "2. Buscar y descargar un modelo (ej: Llama 3, Mistral)\n"
+                "3. Ir a la pestana **Local Server** y presionar **Start Server**\n"
+                "4. Presiona **Guardar** y luego **Detectar Modelos**"
+            ),
+        },
+        "Groq Cloud": {
+            "url": "https://api.groq.com/openai/v1",
+            "api_key": "",
+            "necesita_key": True,
+            "modelo_sugerido": "llama-3.3-70b-versatile",
+            "modelos_ejemplo": [
+                "llama-3.3-70b-versatile", "llama-3.1-8b-instant",
+                "gemma2-9b-it", "mixtral-8x7b-32768",
+            ],
+            "pasos": (
+                "**Pasos para configurar Groq:**\n"
+                "1. Ir a https://console.groq.com y crear cuenta (gratis)\n"
+                "2. Ir a **API Keys** → **Create API Key**\n"
+                "3. Copiar la key (empieza con `gsk_...`)\n"
+                "4. Pegarla en el campo **API Key** abajo\n"
+                "5. Presiona **Guardar** y luego **Detectar Modelos**"
+            ),
+        },
+        "OpenAI": {
+            "url": "https://api.openai.com/v1",
+            "api_key": "",
+            "necesita_key": True,
+            "modelo_sugerido": "gpt-4o-mini",
+            "modelos_ejemplo": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
+            "pasos": (
+                "**Pasos para configurar OpenAI:**\n"
+                "1. Ir a https://platform.openai.com/api-keys\n"
+                "2. Crear una API Key\n"
+                "3. Copiar la key (empieza con `sk-...`)\n"
+                "4. Pegarla en el campo **API Key** abajo\n"
+                "5. Presiona **Guardar** y luego **Detectar Modelos**\n\n"
+                "*Nota: OpenAI requiere saldo/creditos en la cuenta.*"
+            ),
+        },
+        "Personalizado": {
+            "url": "",
+            "api_key": "",
+            "necesita_key": True,
+            "modelo_sugerido": "",
+            "modelos_ejemplo": [],
+            "pasos": (
+                "**Servidor personalizado compatible con OpenAI API:**\n"
+                "1. Ingresa la URL de tu servidor (ej: `http://mi-servidor:8080/v1`)\n"
+                "2. Ingresa la API Key si tu servidor la requiere\n"
+                "3. Presiona **Guardar** y luego **Detectar Modelos**"
+            ),
+        },
+    }
+
+    # Detectar proveedor actual
+    current_url = _cfg.LLM_BASE_URL
+    detected_provider = "Personalizado"
+    for nombre, datos in PROVEEDORES.items():
+        if datos["url"] and datos["url"] in current_url:
+            detected_provider = nombre
+            break
+
+    if "_provider" not in st.session_state:
+        st.session_state["_provider"] = detected_provider
+
+    # ══════════════════════════════════════════════════════════════════
+    #  SECCION 1: Configuracion del Proveedor LLM
+    # ══════════════════════════════════════════════════════════════════
+    st.markdown("### 1. Proveedor LLM")
+
+    provider = st.selectbox(
+        "Selecciona tu proveedor de modelos:",
+        list(PROVEEDORES.keys()),
+        index=list(PROVEEDORES.keys()).index(st.session_state["_provider"]),
+        key="_sel_provider",
+    )
+    st.session_state["_provider"] = provider
+    prov_data = PROVEEDORES[provider]
+
+    st.markdown(prov_data["pasos"])
+
+    col_url, col_key = st.columns(2)
+    with col_url:
+        default_url = prov_data["url"] if prov_data["url"] else current_url
+        new_base_url = st.text_input(
+            "URL del servidor",
+            value=default_url,
+            key="_cfg_llm_url",
+            disabled=(provider not in ("Personalizado",)),
+            help="Endpoint compatible con OpenAI API",
+        )
+    with col_key:
+        default_key = _cfg.LLM_API_KEY if _cfg.LLM_API_KEY != "not-needed" else ""
+        if not prov_data["necesita_key"]:
+            st.text_input(
+                "API Key",
+                value="No requerida",
+                disabled=True,
+                key="_cfg_key_disabled",
+            )
+            new_api_key = "not-needed"
+        else:
+            new_api_key = st.text_input(
+                "API Key",
+                value=default_key,
+                type="password",
+                key="_cfg_llm_key",
+                placeholder="Pega tu API key aqui...",
+            )
+
+    # Modelo sugerido segun proveedor
+    modelo_default = _cfg.LLM_MODEL
+    if prov_data["modelo_sugerido"] and detected_provider != provider:
+        modelo_default = prov_data["modelo_sugerido"]
+
+    col_model, col_fallback = st.columns(2)
+    with col_model:
+        new_llm_model = st.text_input(
+            "Modelo principal",
+            value=modelo_default,
+            key="_cfg_llm_model",
+            help="Se actualiza automaticamente al detectar modelos",
+        )
+        if prov_data["modelos_ejemplo"]:
+            st.caption(f"Ejemplos: {', '.join(prov_data['modelos_ejemplo'])}")
+    with col_fallback:
+        new_fallback = st.text_input(
+            "Modelos fallback (separados por coma)",
+            value=",".join(_cfg.LLM_FALLBACK_MODELS),
+            key="_cfg_llm_fallback",
+            help="Modelos alternativos si el principal no responde",
+        )
+
+    # ── Groq Cloud como fallback adicional ────────────────────────────
+    st.markdown("---")
+    st.markdown("### Groq Cloud (Fallback opcional)")
+    st.caption("Si usas un servidor local, Groq puede ser tu respaldo en la nube cuando no responda.")
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        new_groq_key = st.text_input(
+            "Groq API Key",
+            value=_cfg.GROQ_API_KEY,
+            type="password",
+            key="_cfg_groq_key",
+            help="Obtener gratis en https://console.groq.com/keys — dejar vacio para desactivar",
+        )
+    with col_g2:
+        st.text_input("Groq URL", value=_cfg.GROQ_BASE_URL, disabled=True, key="_cfg_groq_url")
+
+    # ── Whisper ────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Whisper (Transcripcion de Audio)")
+    st.caption("Motor de transcripcion de audio a texto. Modelos mas grandes = mejor calidad pero mas lento.")
+    col_w1, col_w2, col_w3 = st.columns(3)
+    with col_w1:
+        whisper_opts = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+        new_whisper_model = st.selectbox(
+            "Modelo Whisper",
+            whisper_opts,
+            index=whisper_opts.index(_cfg.WHISPER_MODEL) if _cfg.WHISPER_MODEL in whisper_opts else 5,
+            key="_cfg_whisper_model",
+        )
+    with col_w2:
+        new_whisper_device = st.selectbox(
+            "Dispositivo",
+            ["cuda", "cpu"],
+            index=0 if _cfg.WHISPER_DEVICE == "cuda" else 1,
+            key="_cfg_whisper_device",
+            help="cuda = GPU (rapido) | cpu = procesador (lento)",
+        )
+    with col_w3:
+        new_whisper_lang = st.text_input(
+            "Idioma",
+            value=_cfg.WHISPER_LANGUAGE,
+            key="_cfg_whisper_lang",
+            help="Codigo ISO: es (espanol), en (ingles), pt (portugues), etc.",
+        )
+
+    # ── HuggingFace ────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### HuggingFace (Diarizacion de Hablantes)")
+    st.caption("Token necesario para pyannote (identificar quien habla en cada segmento del audio).")
+    new_hf_token = st.text_input(
+        "HuggingFace Token",
+        value=_cfg.HF_TOKEN,
+        type="password",
+        key="_cfg_hf_token",
+        help="Obtener en https://huggingface.co/settings/tokens — Aceptar licencia en https://huggingface.co/pyannote/speaker-diarization-3.1",
+    )
+
+    # ── SQL Server ─────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Base de Datos (SQL Server)")
+    st.caption("Conexion opcional para almacenar resultados en base de datos.")
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        new_sql_server = st.text_input("Servidor", value=_cfg.SQL_SERVER, key="_cfg_sql_server")
+        new_sql_db = st.text_input("Base de datos", value=_cfg.SQL_DATABASE, key="_cfg_sql_db")
+        new_sql_driver = st.text_input("Driver ODBC", value=_cfg.SQL_DRIVER, key="_cfg_sql_driver")
+    with col_s2:
+        new_sql_user = st.text_input("Usuario", value=_cfg.SQL_USERNAME, key="_cfg_sql_user")
+        new_sql_pass = st.text_input("Password", value=_cfg.SQL_PASSWORD, key="_cfg_sql_pass", type="password")
+
+    # ── Boton Guardar ─────────────────────────────────────────────────
+    st.markdown("---")
+    if st.button("Guardar toda la Configuracion", use_container_width=True, type="primary",
+                  icon=":material/save:"):
+        # Usar URL del proveedor si no es personalizado
+        save_url = prov_data["url"] if prov_data["url"] else new_base_url
+        changes = {
+            "LLM_BASE_URL": save_url,
+            "LLM_MODEL": new_llm_model,
+            "LLM_API_KEY": new_api_key,
+            "LLM_FALLBACK_MODELS": new_fallback,
+            "GROQ_API_KEY": new_groq_key,
+            "WHISPER_MODEL": new_whisper_model,
+            "WHISPER_DEVICE": new_whisper_device,
+            "WHISPER_LANGUAGE": new_whisper_lang,
+            "HF_TOKEN": new_hf_token,
+            "SQL_SERVER": new_sql_server,
+            "SQL_DATABASE": new_sql_db,
+            "SQL_USERNAME": new_sql_user,
+            "SQL_PASSWORD": new_sql_pass,
+            "SQL_DRIVER": new_sql_driver,
+        }
+        save_env_config(changes)
+        _cfg.LLM_FALLBACK_MODELS = [m.strip() for m in new_fallback.split(",") if m.strip()]
+        st.session_state.selected_model = new_llm_model
+        # Limpiar estado de deteccion previo
+        st.session_state.pop("_modelos_info", None)
+        st.session_state.pop("_test_result", None)
+        st.success("Configuracion guardada correctamente.")
+        st.rerun()
+
+    # ══════════════════════════════════════════════════════════════════
+    #  SECCION 3: Conectar y Detectar Modelos
+    # ══════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### 2. Conectar y Detectar Modelos")
+    st.caption(f"Servidor actual: `{_cfg.LLM_BASE_URL}` | Modelo: `{_cfg.LLM_MODEL}`")
+
+    col_detect, col_status = st.columns([1, 2])
+
+    with col_detect:
+        if st.button("Detectar Modelos", use_container_width=True, type="primary",
+                      icon=":material/refresh:", key="_btn_detectar"):
+            with st.spinner("Conectando..."):
+                info = run_listar_modelos()
+                st.session_state["_modelos_info"] = info
+
+    info = st.session_state.get("_modelos_info")
+
+    with col_status:
+        if info is None:
+            st.caption("Presiona 'Detectar Modelos' para verificar la conexion.")
+        elif info["conectado"]:
+            st.success(f"Conectado — {info['total']} modelo(s)")
+        else:
+            error_msg = info.get("error", "Error desconocido")
+            if "401" in error_msg or "api_key" in error_msg.lower():
+                st.error("API Key invalida. Revisa la key en la configuracion arriba y guarda.")
+            elif "Connection" in error_msg or "refused" in error_msg.lower():
+                st.error("No se pudo conectar al servidor. Verifica que este corriendo.")
+            else:
+                st.error(f"Error: {error_msg}")
+
+    if info and info["conectado"] and info["modelos"]:
+        modelos = info["modelos"]
+
+        # Si el modelo actual no existe en el servidor, auto-seleccionar el primero
+        current = st.session_state.selected_model
+        if current not in modelos:
+            first = modelos[0]
+            st.session_state.selected_model = first
+            _cfg.LLM_MODEL = first
+            save_env_config({"LLM_MODEL": first})
+            st.warning(f"El modelo `{current}` no existe en el servidor. Se selecciono **{first}** automaticamente.")
+            current = first
+
+        idx = modelos.index(current)
+
+        st.markdown("**Modelos disponibles en el servidor:**")
+        chosen = st.radio(
+            "Selecciona el modelo que usaran los agentes:",
+            modelos,
+            index=idx,
+            key="_radio_modelo",
+        )
+        if chosen != st.session_state.selected_model:
+            st.session_state.selected_model = chosen
+            _cfg.LLM_MODEL = chosen
+            save_env_config({"LLM_MODEL": chosen})
+            st.rerun()
+
+        st.info(f"Modelo activo: **{st.session_state.selected_model}**")
+
+    # ══════════════════════════════════════════════════════════════════
+    #  SECCION 4: Probar Modelo
+    # ══════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### 3. Probar Modelo")
+
+    modelos_disponibles = info["modelos"] if info and info.get("conectado") else []
+
+    if not modelos_disponibles:
+        st.caption("Primero conecta y detecta los modelos disponibles arriba.")
+    else:
+        col_t1, col_t2 = st.columns([1, 2])
+        with col_t1:
+            modelo_test = st.selectbox(
+                "Modelo:",
+                modelos_disponibles,
+                key="_select_test_modelo",
+            )
+            if st.button(f"Probar", use_container_width=True,
+                          icon=":material/play_arrow:", key="_btn_probar"):
+                with st.spinner(f"Probando {modelo_test}..."):
+                    test_result = run_probar_modelo(modelo_test)
+                    st.session_state["_test_result"] = test_result
+
+        with col_t2:
+            test_result = st.session_state.get("_test_result")
+            if test_result:
+                if test_result["ok"]:
+                    st.success(f"**{test_result['modelo']}** respondio en **{test_result['tiempo_seg']}s**")
+                    st.markdown(f"> {test_result['respuesta']}")
+                else:
+                    st.error(f"**{test_result['modelo']}** fallo: {test_result['error']}")
+            else:
+                st.caption("Selecciona un modelo y presiona 'Probar'.")
+
+else:
+    # ── Vista de Agente ────────────────────────────────────────────────
+    agent_id = st.session_state.selected_agent
+    agent = AGENTS[agent_id]
+
+    st.markdown(f"# {agent['nombre']}")
+    st.markdown(f'<span class="agent-role">{agent["rol"]}</span>', unsafe_allow_html=True)
+    st.markdown(agent["descripcion"])
+
+    # ── Boton Configurar Prompt (arriba) ───────────────────────────────
+    active_v = get_active_version(agent_id)
+    v_label = f"v{active_v}" if active_v > 0 else "default"
+    is_prompt_sel = st.session_state.selected_skill == "_prompt_especialista"
+    prompt_col1, prompt_col2 = st.columns([1, 3])
+    with prompt_col1:
+        if st.button(
+            "Configurar Prompt",
+            key=f"skill__prompt_{agent_id}",
+            use_container_width=True,
+            type="primary" if is_prompt_sel else "secondary",
+            icon=":material/psychology:",
+        ):
+            st.session_state.selected_skill = "_prompt_especialista"
+            st.session_state.execution_result = None
+            st.rerun()
+    with prompt_col2:
+        st.caption(f"Personalidad e instrucciones del agente ({v_label})")
+
+    st.markdown("---")
+
+    # ── Matriz de Habilidades ──────────────────────────────────────────
+    st.markdown("### Habilidades")
+    skills = agent["habilidades"]
+    n_cols = min(len(skills), 3)
+    skill_rows = [skills[i:i + n_cols] for i in range(0, len(skills), n_cols)]
+
+    for row in skill_rows:
+        cols = st.columns(n_cols)
+        for j, skill_item in enumerate(row):
+            with cols[j]:
+                is_sel = st.session_state.selected_skill == skill_item["id"]
+                with st.container(border=True):
+                    if st.button(
+                        skill_item["nombre"],
+                        key=f"skill_{skill_item['id']}",
+                        use_container_width=True,
+                        type="primary" if is_sel else "secondary",
+                    ):
+                        st.session_state.selected_skill = skill_item["id"]
+                        st.session_state.execution_result = None
+                        st.rerun()
+                    st.caption(skill_item["descripcion"][:100])
+
+    st.markdown("---")
+
+    # ── Panel de Ejecucion (debajo de la matriz) ──────────────────────
+    if st.session_state.selected_skill is None:
+        st.info("Selecciona una habilidad arriba para ver detalles y ejecutarla.")
+
+    elif st.session_state.selected_skill == "_prompt_especialista":
+        # ── UI de gestion de prompt ────────────────────────────────
+        st.markdown("### :material/psychology: Prompt de Especialista")
+        st.markdown(
+            f"Define la personalidad, instrucciones y comportamiento de **{agent['nombre']}**. "
+            "Este prompt se usa como contexto base en todas las interacciones con el LLM."
+        )
+        st.markdown("---")
+
+        # Estado local para edicion
+        if f"_prompt_edit_{agent_id}" not in st.session_state:
+            st.session_state[f"_prompt_edit_{agent_id}"] = False
+
+        versions = get_prompt_versions(agent_id)
+        active_ver = get_active_version(agent_id)
+        current_text = get_current_prompt(agent_id)
+
+        # ── Informacion de version activa ──────────────────────────
+        col_v1, col_v2, col_v3 = st.columns(3)
+        col_v1.metric("Version Activa", f"v{active_ver}" if active_ver > 0 else "Default")
+        col_v2.metric("Total Versiones", len(versions))
+        col_v3.metric("Caracteres", len(current_text))
+
+        # ── Prompt actual ──────────────────────────────────────────
+        st.markdown("#### Prompt Actual")
+        st.code(current_text, language=None)
+
+        # ── Historial de versiones ─────────────────────────────────
+        if versions:
+            st.markdown("---")
+            st.markdown("#### Historial de Versiones")
+            for v in reversed(versions):
+                v_num = v["version"]
+                is_active = v_num == active_ver
+                badge = " **← ACTIVA**" if is_active else ""
+                nota_text = f' — "{v["nota"]}"' if v.get("nota") else ""
+                with st.expander(
+                    f"v{v_num} - {v['fecha']} {v['hora']}{nota_text}{badge}"
+                ):
+                    v_text = load_prompt_version(agent_id, v_num)
+                    st.code(v_text, language=None)
+                    st.caption(f"{v['caracteres']} caracteres")
+                    if not is_active:
+                        if st.button(
+                            f"Activar v{v_num}",
+                            key=f"activate_{agent_id}_v{v_num}",
+                            type="primary",
+                        ):
+                            activate_version(agent_id, v_num)
+                            st.success(f"v{v_num} activada para {agent['nombre']}")
+                            st.rerun()
+
+            # Opcion de volver al default
+            if active_ver > 0:
+                if st.button(
+                    "Restaurar Prompt Default",
+                    key=f"restore_default_{agent_id}",
+                    icon=":material/restart_alt:",
+                ):
+                    activate_version(agent_id, 0)
+                    st.success(f"Prompt de {agent['nombre']} restaurado al default.")
+                    st.rerun()
+
+        # ── Editar / Crear nueva version ───────────────────────────
+        st.markdown("---")
+        st.markdown("#### Editar Prompt")
+        st.caption("Modifica el prompt y guarda como nueva version. Las versiones anteriores se conservan.")
+
+        new_prompt = st.text_area(
+            "Prompt del agente",
+            value=current_text,
+            height=300,
+            key=f"_ta_prompt_{agent_id}",
+            label_visibility="collapsed",
+        )
+        nota = st.text_input(
+            "Nota de version (opcional)",
+            placeholder="Ej: Agregado criterio de retencion, mejorado tono...",
+            key=f"_nota_prompt_{agent_id}",
+        )
+
+        col_save, col_cancel = st.columns(2)
+        with col_save:
+            has_changes = new_prompt.strip() != current_text.strip()
+            if st.button(
+                "Guardar Nueva Version",
+                use_container_width=True,
+                type="primary",
+                disabled=not has_changes,
+                icon=":material/save:",
+                key=f"_save_prompt_{agent_id}",
+            ):
+                info = save_prompt(agent_id, new_prompt.strip(), nota)
+                st.success(
+                    f"Prompt v{info['version']} guardado para {agent['nombre']} "
+                    f"({info['caracteres']} caracteres)"
+                )
+                st.rerun()
+        with col_cancel:
+            if has_changes:
+                st.caption("Hay cambios sin guardar")
+            else:
+                st.caption("Sin cambios")
+
+    else:
+        skill = get_skill(agent_id, st.session_state.selected_skill)
+        if not skill:
+            st.error("Habilidad no encontrada")
+        else:
+            st.markdown(f"### {skill['nombre']}")
+            st.markdown(skill["descripcion"])
+
+            st.markdown("**Datos necesarios:**")
+            for d in skill["datos_necesarios"]:
+                st.markdown(f"- `{d}`")
+            st.markdown(f"**Resultado:** {skill['resultado']}")
+            st.markdown("---")
+            st.markdown("### Ejecutar")
+
+            # ── Inputs ─────────────────────────────────────────────
+            uploaded_file = None
+            input_text = ""
+            selected_prev_results = []
+
+            if skill.get("acepta_archivo"):
+                exts = skill.get("extensiones", [])
+                uploaded_file = st.file_uploader(
+                    f"Archivo ({', '.join(exts)})",
+                    type=[e.lstrip(".") for e in exts],
+                    key=f"upload_{skill['id']}",
+                )
+
+            if skill.get("acepta_texto"):
+                input_text = st.text_area(
+                    "Texto / Parametros",
+                    height=120,
+                    placeholder="Pega texto, dialogo o parametros aqui...",
+                    key=f"text_{skill['id']}",
+                )
+
+            if skill.get("acepta_resultado_previo"):
+                compatible = skill.get("agentes_compatibles", [])
+                is_multi = skill.get("multi_resultado", False)
+
+                prev_results = []
+                for ca in compatible:
+                    prev_results.extend(load_all_results(ca))
+                if skill["id"] == "resumen_equipo":
+                    prev_results = load_all_results()
+
+                if prev_results:
+                    st.markdown("**Resultados previos disponibles:**")
+                    options = [
+                        f"{r.get('agent_name', '?')} / {r.get('skill_name', '?')} "
+                        f"v{r.get('version', 1)} - {r.get('fecha', '')}"
+                        for r in prev_results
+                    ]
+                    if is_multi:
+                        sel_idx = st.multiselect(
+                            "Selecciona resultados (2+ para analisis)",
+                            range(len(options)),
+                            format_func=lambda i: options[i],
+                            key=f"multi_{skill['id']}",
+                        )
+                        selected_prev_results = [prev_results[i] for i in sel_idx]
+                    else:
+                        sel_idx = st.selectbox(
+                            "Selecciona resultado previo",
+                            range(len(options)),
+                            format_func=lambda i: options[i],
+                            key=f"single_{skill['id']}",
+                        )
+                        if sel_idx is not None:
+                            selected_prev_results = [prev_results[sel_idx]]
+                else:
+                    st.caption("No hay resultados previos. Ejecuta primero una habilidad compatible.")
+
+            # ── Boton Ejecutar ─────────────────────────────────────
+            st.markdown("")
+            can_exec = (
+                uploaded_file is not None
+                or len(input_text.strip()) > 0
+                or len(selected_prev_results) > 0
+            )
+
+            if st.button(
+                f"Ejecutar: {skill['nombre']}",
+                disabled=not can_exec,
+                use_container_width=True,
+                type="primary",
+                key=f"exec_{skill['id']}",
+            ):
+                with st.status(
+                    f"Ejecutando {skill['nombre']}...",
+                    expanded=True,
+                ) as status_ui:
+                    audio_bytes = None
+                    file_bytes = None
+                    filename = ""
+
+                    if uploaded_file:
+                        raw = uploaded_file.read()
+                        filename = uploaded_file.name
+                        ext = Path(filename).suffix.lower()
+                        if ext in AUDIO_EXTENSIONS:
+                            audio_bytes = raw
+                        else:
+                            file_bytes = raw
+
+                    resultado_previo = None
+                    if selected_prev_results and not skill.get("multi_resultado"):
+                        resultado_previo = selected_prev_results[0].get("resultado")
+
+                    result = execute_skill(
+                        agent_id=agent_id,
+                        skill_id=skill["id"],
+                        skill_name=skill["nombre"],
+                        audio_bytes=audio_bytes,
+                        file_bytes=file_bytes,
+                        filename=filename,
+                        texto=input_text,
+                        resultado_previo=resultado_previo,
+                        resultados_multiples=(
+                            selected_prev_results if skill.get("multi_resultado") else None
+                        ),
+                        status_container=status_ui,
+                    )
+                    st.session_state.execution_result = result
+                    res_data = result.get("resultado", {})
+                    if isinstance(res_data, dict) and "error" in res_data:
+                        status_ui.update(
+                            label=f"Error: {res_data['error'][:80]}",
+                            state="error",
+                        )
+                    else:
+                        modelo = ""
+                        if isinstance(res_data, dict):
+                            modelo = res_data.get("_modelo_usado", "")
+                        label = f"{skill['nombre']} completado"
+                        if modelo:
+                            label += f" (modelo: {modelo})"
+                        status_ui.update(label=label, state="complete")
+
+            # ── Mostrar Resultado ──────────────────────────────────
+            if st.session_state.execution_result:
+                result = st.session_state.execution_result
+                st.markdown("---")
+                st.markdown("### Resultado")
+
+                cm1, cm2, cm3, cm4 = st.columns(4)
+                cm1.metric("Agente", result.get("agent_name", ""))
+                cm2.metric("Version", f"v{result.get('version', 1)}")
+                cm3.metric("Fecha", result.get("fecha", ""))
+                pv = result.get("prompt_version", 0)
+                cm4.metric("Prompt", f"v{pv}" if pv else "default")
+
+                data = result.get("resultado", {})
+
+                if isinstance(data, dict) and "error" in data:
+                    st.error(f"Error: {data['error']}")
+
+                elif isinstance(data, dict):
+                    # ── VISUALIZAR DATOS: graficos interactivos ──
+                    if data.get("tipo_analisis") == "visualizacion":
+                        figures = get_last_chart_figures()
+                        if figures:
+                            _render_charts(figures, result)
+                        else:
+                            st.info(f"Se generaron {data.get('total_graficos', 0)} graficos.")
+                            for g in data.get("graficos_generados", []):
+                                st.markdown(f"- {g}")
+
+                    # Render inteligente segun tipo de resultado
+                    elif "dialogo" in data:
+                        st.text_area("Dialogo", data["dialogo"], height=300, disabled=True)
+                    elif "texto_completo" in data:
+                        st.text_area("Transcripcion", data["texto_completo"], height=300, disabled=True)
+                    elif "reporte" in data:
+                        st.code(data["reporte"], language=None)
+                    elif "evaluacion" in data:
+                        st.metric("Puntaje Total", f"{data.get('puntaje_total', 'N/A')}/100")
+                        st.markdown(f"**Resumen:** {data.get('resumen_general', '')}")
+                        if data.get("recomendaciones"):
+                            st.markdown("**Recomendaciones:**")
+                            for rec in data["recomendaciones"]:
+                                st.markdown(f"- {rec}")
+
+                    # ── ATLAS: Informes con dashboard ──────────────
+                    elif data.get("dashboard_ejecutivo") or data.get("dashboard_kpis") or data.get("informe_por_modulo") or data.get("informes"):
+                        _render_atlas_report(data)
+
+                    elif "kpis" in data or "kpis_semana" in data or "kpis_mes" in data:
+                        kpis = data.get("kpis") or data.get("kpis_semana") or data.get("kpis_mes", [])
+                        if kpis:
+                            import pandas as pd
+                            st.dataframe(pd.DataFrame(kpis), use_container_width=True)
+                        if data.get("resumen_ejecutivo"):
+                            st.markdown(f"**Resumen:** {data['resumen_ejecutivo']}")
+                        if data.get("alertas"):
+                            st.warning("**Alertas:** " + " | ".join(str(a) for a in data["alertas"]))
+                        # Render fuentes y conclusiones si existen
+                        if data.get("conclusiones"):
+                            st.markdown("**Conclusiones:**")
+                            for c in data["conclusiones"]:
+                                st.markdown(f"- {c}")
+                        if data.get("fuentes_utilizadas"):
+                            with st.expander("Fuentes de datos utilizadas"):
+                                import pandas as pd
+                                st.dataframe(pd.DataFrame(data["fuentes_utilizadas"]), use_container_width=True)
+
+                    elif "resultado" in data and "agentes_minimos" in data.get("resultado", {}):
+                        # Staffing
+                        r = data["resultado"]
+                        sc1, sc2, sc3 = st.columns(3)
+                        sc1.metric("Agentes Minimos", r["agentes_minimos"])
+                        sc2.metric("Con Shrinkage", r["agentes_con_shrinkage"])
+                        sc3.metric("NdS Proyectado", f"{r['nivel_servicio_proyectado']}%")
+                        st.metric("Ocupacion", f"{r['ocupacion_pct']}%")
+                    elif "total_tareas" in data:
+                        st.metric("Total Tareas", data["total_tareas"])
+                        if data.get("agentes_activos"):
+                            for ag, cnt in data["agentes_activos"].items():
+                                st.markdown(f"- **{ag}**: {cnt} tareas")
+                        if data.get("detalle_tareas"):
+                            with st.expander("Detalle de tareas recientes"):
+                                import pandas as pd
+                                st.dataframe(pd.DataFrame(data["detalle_tareas"]), use_container_width=True)
+                    elif "errores_criticos" in data:
+                        st.metric("Riesgo General", data.get("riesgo_general", "?"))
+                        st.metric("Errores Detectados", data.get("total_errores", 0))
+                        for err in data.get("errores_criticos", []):
+                            sev = err.get("severidad", "?")
+                            color = "red" if sev == "alta" else "orange" if sev == "media" else "blue"
+                            st.markdown(f"- :{color}[**{sev.upper()}**] {err.get('tipo', '')}: {err.get('descripcion', '')}")
+                    elif "lineas" in data:
+                        # Facturacion
+                        import pandas as pd
+                        st.dataframe(pd.DataFrame(data["lineas"]), use_container_width=True)
+                        st.metric("Total Facturacion", data.get("total_facturacion", "N/A"))
+                    elif "tendencia" in data:
+                        st.metric("Tendencia", data["tendencia"])
+                        st.metric("Promedio", data.get("puntaje_promedio", "N/A"))
+                    else:
+                        st.json(data)
+
+                    with st.expander("Ver JSON completo"):
+                        st.json(data)
+
+                    # ── Auto-graficos para cualquier resultado ──
+                    if data.get("tipo_analisis") != "visualizacion":
+                        with st.expander("Graficos automaticos"):
+                            n = _render_auto_charts(data, result)
+                            if n == 0:
+                                st.caption("No se detectaron datos suficientes para generar graficos.")
+                else:
+                    st.write(data)
+
+                # Exportar resultado como JSON
+                export_col1, export_col2 = st.columns(2)
+                with export_col1:
+                    json_str = json.dumps(data, ensure_ascii=False, indent=2, default=str)
+                    st.download_button(
+                        "Descargar JSON",
+                        data=json_str,
+                        file_name=f"{agent_id}_{skill['id']}_{result.get('fecha', '')}_v{result.get('version', 1)}.json",
+                        mime="application/json",
+                        key=f"dl_json_{skill['id']}",
+                    )
+                with export_col2:
+                    st.caption(
+                        f"Guardado en: agent_results/{agent_id}/ | "
+                        f"Timestamp: {result.get('timestamp', '')}"
+                    )
+
+    # ── Historial del agente ───────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(f"### Historial de {agent['nombre']}")
+
+    agent_history = load_all_results(agent_id)
+    if agent_history:
+        for rec in agent_history[:10]:
+            pv = rec.get("prompt_version", 0)
+            pv_label = f" | prompt v{pv}" if pv else ""
+            with st.expander(
+                f"{rec.get('skill_name', '?')} v{rec.get('version', 1)} "
+                f"- {rec.get('fecha', '')} {rec.get('hora', '')}{pv_label}"
+            ):
+                st.caption(f"Input: {rec.get('input_summary', 'N/A')}")
+                res = rec.get("resultado", {})
+                if isinstance(res, dict):
+                    if "error" in res:
+                        st.error(res["error"])
+                    elif "puntaje_total" in res:
+                        st.metric("Puntaje", f"{res['puntaje_total']}/100")
+                    st.json(res)
+                else:
+                    st.write(res)
+    else:
+        st.caption("Este agente aun no ha ejecutado tareas.")
