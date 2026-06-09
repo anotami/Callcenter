@@ -9,3 +9,5 @@ dist/
 build/
 .venv/
 models/
+agent_results/
+agent_prompts/
