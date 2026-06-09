@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(python *)",
+      "Bash(streamlit run *)",
+      "Bash(ls *)",
+      "Bash(cat examples/*)",
+      "Bash(pip install *)"
+    ]
+  }
+}
