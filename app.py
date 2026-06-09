@@ -362,13 +362,449 @@ with st.sidebar:
 # ── Panel Principal ────────────────────────────────────────────────────
 
 if st.session_state.selected_agent is None:
+    from datetime import datetime, date
+
     st.markdown("# CallCenter AI Team")
-    st.markdown("### Tu equipo de agentes inteligentes para operaciones de call center")
+    st.markdown("### Ciclo WFM Mensual")
+
+    # ── Estado del ciclo mensual ──────────────────────────────────────
+    hoy = date.today()
+    mes_actual = hoy.strftime("%Y-%m")
+    dia_mes = hoy.day
+    nombre_mes = hoy.strftime("%B %Y").capitalize()
+
+    resultados_mes = [r for r in all_results if r.get("fecha", "").startswith(mes_actual)]
+    skills_completadas = set(r.get("skill_id") for r in resultados_mes if r.get("resultado", {}) and "error" not in r.get("resultado", {}))
+
+    fase_1_skills = {"ingesta_cubo_trafico", "ingesta_acd", "pronostico_erlang"}
+    fase_2_skills = {"planificacion_proveedor"}
+    fase_3_skills = {"ingesta_malla", "programacion_turnos"}
+    fase_4_skills = {"ingesta_gtr", "analisis_gtr", "calcular_cop_cor", "calcular_facturacion", "informe_consolidado"}
+
+    def _fase_status(skills_fase):
+        done = skills_fase & skills_completadas
+        if len(done) == len(skills_fase):
+            return "complete", len(done), len(skills_fase)
+        elif len(done) > 0:
+            return "partial", len(done), len(skills_fase)
+        return "pending", 0, len(skills_fase)
+
+    f1_st, f1_done, f1_total = _fase_status(fase_1_skills)
+    f2_st, f2_done, f2_total = _fase_status(fase_2_skills)
+    f3_st, f3_done, f3_total = _fase_status(fase_3_skills)
+    f4_st, f4_done, f4_total = _fase_status(fase_4_skills)
+
+    _status_icon = {"complete": ":white_check_mark:", "partial": ":hourglass_flowing_sand:", "pending": ":white_large_square:"}
+    _status_color = {"complete": "green", "partial": "orange", "pending": "gray"}
+
+    total_done = f1_done + f2_done + f3_done + f4_done
+    total_all = f1_total + f2_total + f3_total + f4_total
+    pct = int(total_done / total_all * 100) if total_all > 0 else 0
+
+    # Barra de progreso del mes
+    st.caption(f"Mes: **{nombre_mes}** | Dia {dia_mes} | Progreso del ciclo:")
+    st.progress(pct / 100, text=f"{pct}% completado ({total_done}/{total_all} pasos)")
+
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric(f"{_status_icon[f1_st]} Fase 1", f"{f1_done}/{f1_total}", "Pronostico")
+    mc2.metric(f"{_status_icon[f2_st]} Fase 2", f"{f2_done}/{f2_total}", "Planificacion")
+    mc3.metric(f"{_status_icon[f3_st]} Fase 3", f"{f3_done}/{f3_total}", "Programacion")
+    mc4.metric(f"{_status_icon[f4_st]} Fase 4", f"{f4_done}/{f4_total}", "Cierre")
+
     st.markdown("---")
 
-    # ── Pipelines Express (One-Click) ─────────────────────────────────
-    st.markdown("### Pipelines Express")
-    st.caption("Ejecuta flujos completos con un solo click. Carga tu archivo y el sistema encadena los agentes automaticamente.")
+    # ══════════════════════════════════════════════════════════════════
+    #  FASE 1: Pronostico (Dia 1-5)
+    # ══════════════════════════════════════════════════════════════════
+    with st.expander(
+        f"{_status_icon[f1_st]} **FASE 1 — Pronostico** (Dia 1-5) | "
+        f"Extraer datos de la central, analizar, pronosticar con Erlang C",
+        expanded=(f1_st != "complete"),
+    ):
+        st.markdown("""
+**Que hacer:** Extraer el Cubo de Trafico del mes anterior desde la central telefonica (INTEGRATEL),
+analizarlo y generar el pronostico de agentes requeridos con Erlang C.
+
+**Entregable:** OUTPUT I — Rac Requerido Disponible por intervalo (cuantos agentes necesitas).
+        """)
+
+        st.markdown("##### Paso 1: Cargar Cubo de Trafico")
+        f1_file = st.file_uploader(
+            "Cubo de Trafico o datos ACD (.csv, .xlsx)",
+            type=["csv", "xlsx", "xls"],
+            key="fase1_upload",
+            help="Exporta el reporte de trafico de tu central telefonica con columnas: fecha, intervalo, llamadas, tmo, nds",
+        )
+
+        st.markdown("##### Paso 2: Parametros del pronostico")
+        f1_col1, f1_col2, f1_col3 = st.columns(3)
+        with f1_col1:
+            f1_nds = st.number_input("Meta NdS (%)", value=80, min_value=50, max_value=99, key="f1_nds")
+        with f1_col2:
+            f1_tresp = st.number_input("Tiempo respuesta (seg)", value=20, min_value=5, max_value=60, key="f1_tresp")
+        with f1_col3:
+            f1_periodo = st.text_input("Periodo", value=nombre_mes, key="f1_periodo")
+
+        if "ingesta_cubo_trafico" in skills_completadas or "ingesta_acd" in skills_completadas:
+            st.success("Ingesta completada este mes")
+        if "pronostico_erlang" in skills_completadas:
+            st.success("Pronostico Erlang completado este mes")
+
+        if st.button(
+            "Ejecutar Fase 1: Pronostico",
+            disabled=(f1_file is None),
+            use_container_width=True,
+            type="primary",
+            key="exec_fase1",
+        ):
+            with st.status("Ejecutando Fase 1...", expanded=True) as f1_status:
+                f1_bytes = f1_file.read()
+                f1_name = f1_file.name
+
+                # Detectar si es cubo de trafico o ACD generico
+                is_cubo = any(x in f1_name.lower() for x in ("cubo", "trafico", "traffic"))
+                skill_ingesta = "ingesta_cubo_trafico" if is_cubo else "ingesta_acd"
+                nombre_ingesta = "Ingesta Cubo de Trafico" if is_cubo else "Ingesta de Datos ACD"
+
+                f1_status.update(label="Paso 1/2: Ingesta de datos...")
+                r_ingesta = execute_skill(
+                    agent_id="cortex", skill_id=skill_ingesta, skill_name=nombre_ingesta,
+                    file_bytes=f1_bytes, filename=f1_name,
+                    status_container=f1_status,
+                )
+                st.session_state["fase1_ingesta"] = r_ingesta
+
+                f1_status.update(label="Paso 2/2: Calculando pronostico Erlang C...")
+                texto_erlang = f"NdS objetivo: {f1_nds}%, Tiempo respuesta: {f1_tresp}s, Periodo: {f1_periodo}"
+                r_erlang = execute_skill(
+                    agent_id="nexus", skill_id="pronostico_erlang", skill_name="Pronostico Erlang C",
+                    file_bytes=f1_bytes, filename=f1_name,
+                    texto=texto_erlang,
+                    resultados_multiples=[r_ingesta],
+                    status_container=f1_status,
+                )
+                st.session_state["fase1_erlang"] = r_erlang
+
+                has_err = isinstance(r_erlang.get("resultado", {}), dict) and "error" in r_erlang.get("resultado", {})
+                if has_err:
+                    f1_status.update(label="Fase 1 completada con errores", state="error")
+                else:
+                    f1_status.update(label="Fase 1 completada: OUTPUT I generado", state="complete")
+
+        # Mostrar resultados de fase 1
+        f1_r = st.session_state.get("fase1_erlang")
+        if f1_r:
+            rd = f1_r.get("resultado", {})
+            if isinstance(rd, dict) and "error" not in rd:
+                st.markdown("##### OUTPUT I — Rac Requerido Disponible")
+                if isinstance(rd, dict):
+                    st.json(rd)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  FASE 2: Planificacion (Dia 6-12)
+    # ══════════════════════════════════════════════════════════════════
+    with st.expander(
+        f"{_status_icon[f2_st]} **FASE 2 — Planificacion** (Dia 6-12) | "
+        f"Aplicar reductores, dimensionar y enviar a proveedores",
+        expanded=(f1_st == "complete" and f2_st != "complete"),
+    ):
+        st.markdown("""
+**Que hacer:** Tomar el OUTPUT I y agregar el colchon operativo: +10% volumen, TMO forecast,
+shrinkage, ausentismo y rotacion. Enviar el requerimiento al proveedor.
+
+**Entregable:** OUTPUT II — Rac Planificado Disponible (cuantos agentes pedir al proveedor).
+        """)
+
+        st.markdown("##### Parametros de planificacion")
+        f2_col1, f2_col2, f2_col3, f2_col4 = st.columns(4)
+        with f2_col1:
+            f2_shrinkage = st.number_input("Shrinkage (%)", value=15, min_value=0, max_value=40, key="f2_shrink")
+        with f2_col2:
+            f2_ausentismo = st.number_input("Ausentismo (%)", value=8, min_value=0, max_value=30, key="f2_ausen")
+        with f2_col3:
+            f2_rotacion = st.number_input("Rotacion (%)", value=5, min_value=0, max_value=30, key="f2_rot")
+        with f2_col4:
+            f2_volumen_extra = st.number_input("Volumen extra (%)", value=10, min_value=0, max_value=50, key="f2_vol")
+
+        # Buscar OUTPUT I del mes
+        f1_results = [r for r in resultados_mes if r.get("skill_id") == "pronostico_erlang"]
+        if not f1_results:
+            f1_results_alt = [r for r in resultados_mes if r.get("skill_id") in ("ingesta_cubo_trafico", "ingesta_acd")]
+            if f1_results_alt:
+                st.warning("Hay datos de ingesta pero falta el pronostico Erlang (OUTPUT I). Ejecuta la Fase 1 primero.")
+            else:
+                st.info("Ejecuta la Fase 1 primero para generar el OUTPUT I.")
+
+        if "planificacion_proveedor" in skills_completadas:
+            st.success("Planificacion completada este mes")
+
+        if st.button(
+            "Ejecutar Fase 2: Planificacion",
+            disabled=(len(f1_results) == 0),
+            use_container_width=True,
+            type="primary",
+            key="exec_fase2",
+        ):
+            with st.status("Ejecutando Fase 2...", expanded=True) as f2_status:
+                texto_plan = (
+                    f"shrinkage: {f2_shrinkage}%, ausentismo: {f2_ausentismo}%, "
+                    f"rotacion: {f2_rotacion}%, volumen_extra: {f2_volumen_extra}%"
+                )
+                r_plan = execute_skill(
+                    agent_id="nexus", skill_id="planificacion_proveedor",
+                    skill_name="Planificacion Proveedor",
+                    texto=texto_plan,
+                    resultados_multiples=f1_results[:1],
+                    status_container=f2_status,
+                )
+                st.session_state["fase2_plan"] = r_plan
+
+                has_err = isinstance(r_plan.get("resultado", {}), dict) and "error" in r_plan.get("resultado", {})
+                if has_err:
+                    f2_status.update(label="Fase 2 completada con errores", state="error")
+                else:
+                    f2_status.update(label="Fase 2 completada: OUTPUT II generado", state="complete")
+
+        f2_r = st.session_state.get("fase2_plan")
+        if f2_r:
+            rd = f2_r.get("resultado", {})
+            if isinstance(rd, dict) and "error" not in rd:
+                st.markdown("##### OUTPUT II — Rac Planificado Disponible")
+                st.json(rd)
+                st.info("Descarga este resultado y envialo al proveedor como requerimiento de personal.")
+                json_export = json.dumps(rd, ensure_ascii=False, indent=2, default=str)
+                st.download_button(
+                    "Descargar requerimiento para proveedor",
+                    data=json_export,
+                    file_name=f"requerimiento_proveedor_{mes_actual}.json",
+                    mime="application/json",
+                    key="f2_download",
+                )
+
+    # ══════════════════════════════════════════════════════════════════
+    #  FASE 3: Programacion y Validacion (Dia 13-20)
+    # ══════════════════════════════════════════════════════════════════
+    with st.expander(
+        f"{_status_icon[f3_st]} **FASE 3 — Programacion** (Dia 13-20) | "
+        f"Recibir malla del proveedor, comparar contra requerido, alertas",
+        expanded=(f2_st == "complete" and f3_st != "complete"),
+    ):
+        st.markdown("""
+**Que hacer:** Recibir la Malla del Proveedor (programacion de turnos), cargarla y compararla
+contra el OUTPUT II. Identificar gaps y generar alertas.
+
+**Entregable:** OUTPUTs III, IV, V — Rac Programado (logueado, sin breaks, disponible).
+        """)
+
+        st.markdown("##### Paso 1: Cargar Malla del Proveedor")
+        f3_file = st.file_uploader(
+            "Malla del Proveedor (.csv, .xlsx)",
+            type=["csv", "xlsx", "xls"],
+            key="fase3_upload",
+            help="Archivo con la programacion de turnos que envia el proveedor",
+        )
+
+        st.markdown("##### Paso 2: Parametros de TNPs")
+        f3_col1, f3_col2, f3_col3 = st.columns(3)
+        with f3_col1:
+            f3_breaks = st.text_input("Breaks", value="2x15min", key="f3_breaks")
+        with f3_col2:
+            f3_coach = st.text_input("Coaching", value="30min/semana", key="f3_coach")
+        with f3_col3:
+            f3_capacitacion = st.text_input("Capacitacion", value="2hrs/mes", key="f3_cap")
+
+        # Buscar OUTPUTs previos
+        f2_results = [r for r in resultados_mes if r.get("skill_id") == "planificacion_proveedor"]
+        f1_r_list = [r for r in resultados_mes if r.get("skill_id") == "pronostico_erlang"]
+        previos_fase3 = f1_r_list[:1] + f2_results[:1]
+
+        if not f2_results:
+            st.info("Ejecuta la Fase 2 primero para generar el OUTPUT II.")
+
+        if "programacion_turnos" in skills_completadas:
+            st.success("Programacion completada este mes")
+
+        if st.button(
+            "Ejecutar Fase 3: Programacion",
+            disabled=(f3_file is None or len(f2_results) == 0),
+            use_container_width=True,
+            type="primary",
+            key="exec_fase3",
+        ):
+            with st.status("Ejecutando Fase 3...", expanded=True) as f3_status:
+                f3_bytes = f3_file.read()
+                f3_name = f3_file.name
+
+                f3_status.update(label="Paso 1/2: Ingesta de Malla...")
+                r_malla = execute_skill(
+                    agent_id="cortex", skill_id="ingesta_malla",
+                    skill_name="Ingesta Malla Proveedor",
+                    file_bytes=f3_bytes, filename=f3_name,
+                    status_container=f3_status,
+                )
+                st.session_state["fase3_malla"] = r_malla
+
+                f3_status.update(label="Paso 2/2: Calculando programacion y comparando...")
+                texto_prog = f"breaks: {f3_breaks}, coach: {f3_coach}, capacitacion: {f3_capacitacion}"
+                r_prog = execute_skill(
+                    agent_id="nexus", skill_id="programacion_turnos",
+                    skill_name="Programacion de Turnos",
+                    file_bytes=f3_bytes, filename=f3_name,
+                    texto=texto_prog,
+                    resultados_multiples=previos_fase3 + [r_malla],
+                    status_container=f3_status,
+                )
+                st.session_state["fase3_prog"] = r_prog
+
+                has_err = isinstance(r_prog.get("resultado", {}), dict) and "error" in r_prog.get("resultado", {})
+                if has_err:
+                    f3_status.update(label="Fase 3 completada con errores", state="error")
+                else:
+                    f3_status.update(label="Fase 3 completada: OUTPUTs III-V generados", state="complete")
+
+        f3_r = st.session_state.get("fase3_prog")
+        if f3_r:
+            rd = f3_r.get("resultado", {})
+            if isinstance(rd, dict) and "error" not in rd:
+                st.markdown("##### OUTPUTs III-IV-V — Programacion")
+                st.json(rd)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  FASE 4: Cierre y Facturacion (Dia 21-fin)
+    # ══════════════════════════════════════════════════════════════════
+    with st.expander(
+        f"{_status_icon[f4_st]} **FASE 4 — Cierre** (Dia 21-fin) | "
+        f"GTR real vs planificado, COP/COR, facturacion, reporte ejecutivo",
+        expanded=(f3_st == "complete" and f4_st != "complete"),
+    ):
+        st.markdown("""
+**Que hacer:** Cargar los datos GTR reales del mes, compararlos contra lo planificado,
+calcular COP/COR, facturar y generar el reporte ejecutivo.
+
+**Entregable:** OUTPUT VI (COP/COR) + Facturacion + Informe 360.
+        """)
+
+        st.markdown("##### Paso 1: Cargar datos GTR reales")
+        f4_file = st.file_uploader(
+            "Datos GTR reales (.csv, .xlsx)",
+            type=["csv", "xlsx", "xls"],
+            key="fase4_upload",
+            help="Datos reales del mes: agentes logueados, disponibles, llamadas atendidas, TMO real",
+        )
+
+        st.markdown("##### Paso 2: Parametros de facturacion")
+        f4_col1, f4_col2 = st.columns(2)
+        with f4_col1:
+            f4_tarifa = st.number_input("Tarifa por hora ($)", value=12.50, min_value=0.0, step=0.50, key="f4_tarifa")
+        with f4_col2:
+            f4_horas = st.number_input("Horas contratadas", value=1200, min_value=0, step=100, key="f4_horas")
+
+        # Buscar todos los OUTPUTs previos del mes
+        all_outputs_mes = [r for r in resultados_mes
+                          if r.get("skill_id") in ("pronostico_erlang", "planificacion_proveedor", "programacion_turnos")]
+
+        for skill_check in ("calcular_cop_cor", "calcular_facturacion", "informe_consolidado"):
+            if skill_check in skills_completadas:
+                st.success(f"{skill_check.replace('_', ' ').title()} completado este mes")
+
+        can_close = len(all_outputs_mes) > 0
+        if not can_close:
+            st.info("Ejecuta las fases anteriores primero. Necesitas al menos el OUTPUT I.")
+
+        if st.button(
+            "Ejecutar Fase 4: Cierre completo",
+            disabled=(not can_close),
+            use_container_width=True,
+            type="primary",
+            key="exec_fase4",
+        ):
+            with st.status("Ejecutando Fase 4...", expanded=True) as f4_status:
+                f4_bytes = f4_file.read() if f4_file else None
+                f4_name = f4_file.name if f4_file else ""
+
+                paso_actual = 1
+                total_pasos = 4 if f4_bytes else 3
+
+                # GTR (solo si hay archivo)
+                if f4_bytes:
+                    f4_status.update(label=f"Paso {paso_actual}/{total_pasos}: Ingesta GTR...")
+                    r_gtr = execute_skill(
+                        agent_id="cortex", skill_id="ingesta_gtr",
+                        skill_name="Ingesta GTR",
+                        file_bytes=f4_bytes, filename=f4_name,
+                        status_container=f4_status,
+                    )
+                    all_outputs_mes.append(r_gtr)
+                    paso_actual += 1
+
+                # COP/COR
+                f4_status.update(label=f"Paso {paso_actual}/{total_pasos}: Calculando COP/COR...")
+                r_cop = execute_skill(
+                    agent_id="nexus", skill_id="calcular_cop_cor",
+                    skill_name="Calcular COP/COR",
+                    file_bytes=f4_bytes, filename=f4_name,
+                    resultados_multiples=all_outputs_mes,
+                    status_container=f4_status,
+                )
+                st.session_state["fase4_cop"] = r_cop
+                paso_actual += 1
+
+                # Facturacion
+                f4_status.update(label=f"Paso {paso_actual}/{total_pasos}: Facturacion...")
+                texto_fact = f"tarifa_hora: {f4_tarifa}, horas_contratadas: {f4_horas}, periodo: {nombre_mes}"
+                r_fact = execute_skill(
+                    agent_id="ledger", skill_id="calcular_facturacion",
+                    skill_name="Calcular Facturacion",
+                    texto=texto_fact,
+                    resultados_multiples=all_outputs_mes + [r_cop],
+                    status_container=f4_status,
+                )
+                st.session_state["fase4_fact"] = r_fact
+                paso_actual += 1
+
+                # Informe consolidado
+                f4_status.update(label=f"Paso {paso_actual}/{total_pasos}: Generando informe 360...")
+                r_informe = execute_skill(
+                    agent_id="atlas", skill_id="informe_consolidado",
+                    skill_name="Informe Consolidado 360",
+                    texto=f"Periodo: {nombre_mes}, Cierre mensual WFM",
+                    resultados_multiples=all_outputs_mes + [r_cop, r_fact],
+                    status_container=f4_status,
+                )
+                st.session_state["fase4_informe"] = r_informe
+
+                has_err = isinstance(r_informe.get("resultado", {}), dict) and "error" in r_informe.get("resultado", {})
+                if has_err:
+                    f4_status.update(label="Fase 4 completada con errores", state="error")
+                else:
+                    f4_status.update(label="Fase 4 completada: Cierre mensual generado", state="complete")
+
+        # Mostrar resultados de fase 4
+        f4_informe = st.session_state.get("fase4_informe")
+        if f4_informe:
+            rd = f4_informe.get("resultado", {})
+            if isinstance(rd, dict) and "error" not in rd:
+                st.markdown("##### Informe de Cierre Mensual")
+                if rd.get("dashboard_ejecutivo") or rd.get("dashboard_kpis") or rd.get("informe_por_modulo"):
+                    _render_atlas_report(rd)
+                else:
+                    st.json(rd)
+
+                json_export = json.dumps(rd, ensure_ascii=False, indent=2, default=str)
+                st.download_button(
+                    "Descargar Informe de Cierre",
+                    data=json_export,
+                    file_name=f"cierre_wfm_{mes_actual}.json",
+                    mime="application/json",
+                    key="f4_download",
+                )
+
+    # ══════════════════════════════════════════════════════════════════
+    #  PIPELINES EXPRESS (Otros flujos rapidos)
+    # ══════════════════════════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("### Otros Pipelines Express")
+    st.caption("Flujos adicionales para situaciones especificas.")
 
     pipelines = get_all_pipelines()
     pip_cols = st.columns(3)
@@ -395,14 +831,12 @@ if st.session_state.selected_agent is None:
         st.markdown(f"### {pip.get('icono', '')} {pip['nombre']}")
         st.markdown(pip["descripcion"])
 
-        # Mostrar pasos del pipeline
         st.markdown("**Pasos del pipeline:**")
         for j, paso in enumerate(pip["pasos"]):
             st.markdown(f"{j+1}. **{paso['agent_id'].upper()}** → {paso['skill_name']}")
 
         st.markdown("---")
 
-        # Inputs
         pip_file = None
         pip_texto = ""
 
@@ -472,7 +906,6 @@ if st.session_state.selected_agent is None:
                 st.session_state.pop("_pipeline_result", None)
                 st.rerun()
 
-        # Mostrar resultado del pipeline
         pip_result = st.session_state.get("_pipeline_result")
         if pip_result:
             st.markdown("---")
@@ -483,7 +916,6 @@ if st.session_state.selected_agent is None:
             mc2.metric("Errores", len(pip_result.get("errores", [])))
             mc3.metric("Pipeline", pip_result.get("pipeline_nombre", ""))
 
-            # Mostrar cada paso
             resultados = pip_result.get("resultados", [])
             pasos = pip["pasos"]
             for j, (paso, res) in enumerate(zip(pasos, resultados)):
@@ -498,20 +930,17 @@ if st.session_state.selected_agent is None:
                     else:
                         st.write(res_data)
 
-            # Resultado final destacado
             final = pip_result.get("resultado_final")
             if final:
                 st.markdown("---")
                 st.markdown("### Resultado Final")
                 final_data = final.get("resultado", {})
                 if isinstance(final_data, dict) and not final_data.get("error"):
-                    # Render inteligente del resultado final
                     if final_data.get("dashboard_ejecutivo") or final_data.get("dashboard_kpis") or final_data.get("informe_por_modulo") or final_data.get("informes"):
                         _render_atlas_report(final_data)
                     else:
                         st.json(final_data)
 
-                    # Exportar JSON
                     json_export = json.dumps(final_data, ensure_ascii=False, indent=2, default=str)
                     st.download_button(
                         "Descargar JSON",
@@ -525,7 +954,6 @@ if st.session_state.selected_agent is None:
 
     # ── Agentes ──────────────────────────────────────────────────────
     st.markdown("### Agentes del Equipo")
-    # Mostrar solo agentes operativos (excluir modelos)
     operational_agents = {k: v for k, v in AGENTS.items() if k != "modelos"}
     cols = st.columns(len(operational_agents))
     for i, (agent_id, agent) in enumerate(operational_agents.items()):
@@ -536,7 +964,7 @@ if st.session_state.selected_agent is None:
             st.metric("Habilidades", len(agent["habilidades"]))
 
     st.markdown("---")
-    st.info("Selecciona un agente en el panel lateral para ver sus habilidades y ejecutarlas.")
+    st.info("Selecciona un agente en el panel lateral para ejecutar habilidades individuales.")
 
     if all_results:
         st.markdown("### Actividad del Equipo")
